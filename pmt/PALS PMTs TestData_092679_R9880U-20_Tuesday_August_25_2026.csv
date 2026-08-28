@@ -1,0 +1,33 @@
+﻿Item#,Serial#,HPK Ship Date,Customer#,"(1)
+Cathode	
+Luminous
+Sens.
+uA/lm","(2)
+Anode
+Luminous
+Sens.
+A/lm","(3)
+Anode 
+Dark
+Current
+nA","(4)
+R/W
+x1.0E-3
+","(5)
+Cathode
+Blue Sens.
+Index",,
+R9880U-20,DMA0489,12/23/2021,92679,370,1686,0.86,316,8.96,,FF R
+R9880U-20,DMA0492,12/23/2021,92679,368,1548,1.7,329,8.55,,NF R
+R9880U-20,DMA0495,12/23/2021,92679,379,1797,1.3,346,8.56,,NF Co
+R9880U-20,DMA0506,12/23/2021,92679,354,1646,1.3,319,8.51, ,FF X
+R9880U-20,BYC7827,3/7/2019,085376,583,3385,7.2,501,6.6,,FF C
+R9880U-20,BCF3000,,,482,2918,14,471,5.89,,NF X
+,,,NOTES: ,(1)(2)(4)(5)Light source: Tungsten filament lamp operated at 2856K,,,,,,
+,,,,(2)(3) Overall supply voltage: 1000 V,,,,,,
+,,,,Voltage distribution: K  Dy1  Dy2 - - - - - Dy9  Dy10   P,,,,,,
+,,,,                                   1       1       1          1       1     0.5,,,,,,
+,,,,(3) The bulb of the tube is insulated from ground potential.,,,,,,
+,,,,(4) The quotient of the red light sensitivity (measured with,,,,,,
+,,,,a Toshiba R-68 red filter) divided by the white lightnsitivity.,,,,,,
+,,,,(5) Measured with a Corning CS 5-58 blue filter (half stock thickness).,,,,,,

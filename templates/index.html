@@ -1,0 +1,2466 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PALS Lidar Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.1/nouislider.min.js"></script>
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="kicker">LIDAR OPERATIONS</p>
+        <h1>PALS Waveform Review</h1>
+        <p class="subtitle">Heatmaps scroll in time. Click any timestamp column to inspect all six identities instantly.</p>
+        <div class="picker-row">
+          <button id="pickFilesBtn" class="picker-btn" type="button">Pick File(s)</button>
+          <button id="pickDirBtn" class="picker-btn" type="button">Pick Directory</button>
+          <input id="fileInput" type="file" accept=".csv" multiple hidden>
+          <input id="dirInput" type="file" webkitdirectory directory hidden>
+          <input id="pathInput" class="path-input" type="text" placeholder="Or paste a path to a CSV or directory, then press Enter">
+        </div>
+      </div>
+      <div class="hero-side">
+        <div class="meta" id="metaBox">Loading metadata...</div>
+        <div class="display-controls" id="displayControlsBox">
+          <div class="controls-subtitles">
+            <div class="controls-subtitle">Range Axis</div>
+            <div class="controls-subtitle">Pulse Time</div>
+            <div class="controls-subtitle">Range Correction</div>
+            <div class="controls-subtitle">ND1 Correction</div>
+            <div class="controls-subtitle">2D Filter</div>
+          </div>
+          <div class="controls-options">
+            <div class="controls-options-group">
+              <label class="control-option" for="axisBin">
+                <input id="axisBin" type="radio" name="axisMode" value="bin" checked>
+                <span>Bin</span>
+              </label>
+              <label class="control-option" for="axisRange">
+                <input id="axisRange" type="radio" name="axisMode" value="range">
+                <span>Range</span>
+              </label>
+              <label class="control-option control-option-ref" for="maxXAxisInput">
+                <span id="maxXAxisLabel">Max #</span>
+                <input id="maxXAxisInput" class="control-number" type="number" step="1" min="1" max="1999" value="1999">
+              </label>
+            </div>
+            <div class="controls-options-group">
+              <label class="control-option" for="timeEpoch">
+                <input id="timeEpoch" type="radio" name="pulseTimeMode" value="epoch" checked>
+                <span>Epoch (ms)</span>
+              </label>
+              <label class="control-option" for="timeMmss">
+                <input id="timeMmss" type="radio" name="pulseTimeMode" value="mmss">
+                <span>mm:ss.fff</span>
+              </label>
+            </div>
+            <div class="controls-options-group controls-options-group-correction">
+              <label class="control-option" for="rangeCorrection">
+                <input id="rangeCorrection" type="checkbox">
+                <span>Enable</span>
+              </label>
+              <label class="control-option control-option-ref" for="rangeRefInput">
+                <span>R_ref (m)</span>
+                <input id="rangeRefInput" class="control-number" type="number" step="0.1" min="0.000001" value="1.0">
+              </label>
+            </div>
+            <div class="controls-options-group">
+              <label class="control-option" for="nd1Correction">
+                <input id="nd1Correction" type="checkbox">
+                <span>CO_NEAR</span>
+              </label>
+            </div>
+            <div class="controls-options-group">
+              <label class="control-option control-option-ref" for="filterSigmaVInput">
+                <span>σ_V</span>
+                <input id="filterSigmaVInput" class="control-number" type="number" step="0.1" min="0.01" value="1.5">
+              </label>
+              <label class="control-option control-option-ref" for="filterSigmaHInput">
+                <span>σ_H</span>
+                <input id="filterSigmaHInput" class="control-number" type="number" step="0.1" min="0.01" value="4.0">
+              </label>
+              <label class="control-option" for="heatmapViewModeRaw">
+                <input id="heatmapViewModeRaw" type="radio" name="heatmapViewMode" value="raw" checked>
+                <span>Raw</span>
+              </label>
+              <label class="control-option" for="heatmapViewModeFiltered">
+                <input id="heatmapViewModeFiltered" type="radio" name="heatmapViewMode" value="filtered">
+                <span>Filtered</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>Heatmaps</h2>
+      <div class="heatmap-controls">
+        <label for="heatmapTimeSlider" style="margin-right: 8px;">Time Window:</label>
+        <input id="heatmapTimeSlider" type="range" min="0" max="100" value="0" style="flex: 1; cursor: pointer;">
+        <span id="heatmapTimeLabel" style="margin-left: 8px; min-width: 120px;"></span>
+      </div>
+      <div id="heatmapStrip" class="heatmap-strip"></div>
+    </section>
+
+    <section class="card">
+      <h2>Waveforms</h2>
+      <div class="wave-tabs-container">
+        <div class="wave-tabs" role="tablist" aria-label="Waveform Views">
+          <button id="tabRaw" class="wave-tab active" type="button" data-tab="raw">Raw</button>
+          <button id="tabFiltered" class="wave-tab" type="button" data-tab="filtered">Filtered</button>
+          <button id="tabResiduals" class="wave-tab" type="button" data-tab="residuals">Residuals</button>
+          <button id="tabDepol" class="wave-tab" type="button" data-tab="depol">Depol</button>
+          <button id="tabPower" class="wave-tab" type="button" data-tab="power">Power</button>
+          <button id="tabLaserTemp" class="wave-tab" type="button" data-tab="laserTemp">Laser Temp</button>
+          <button id="tabAttitude" class="wave-tab" type="button" data-tab="attitude">Attitude</button>
+        </div>
+        <label id="logAxisCheckbox" class="log-axis-control" for="logAxisToggle" style="display: none;">
+          <input id="logAxisToggle" type="checkbox">
+          <span>Log Y-Axis</span>
+        </label>
+      </div>
+      <div id="selectionInfo" class="selection">Click a heatmap column to begin.</div>
+      <div id="anchorInfo" class="anchor-info"></div>
+      <div id="waveformChart" class="waveform-chart"></div>
+      <div id="waveformTable" class="waveform-table" style="display: none;"></div>
+    </section>
+
+    <section class="card">
+      <h2>Klatt Slope Analysis</h2>
+      <div class="analysis-container">
+        <!-- Sliders row -->
+        <div class="analysis-sliders-row">
+          <div class="analysis-slider-group">
+            <label class="slider-field-label">NEAR</label>
+            <div class="slider-content">
+              <div id="nearRangeSlider" class="nouislider-container"></div>
+              <div class="range-values">
+                <span id="nearStartValue">0.000</span>
+                <span style="color: #7f95ad;">to</span>
+                <span id="nearEndValue">0.240</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="analysis-slider-group">
+            <label class="slider-field-label">FAR</label>
+            <div class="slider-content">
+              <div id="farRangeSlider" class="nouislider-container"></div>
+              <div class="range-values">
+                <span id="farStartValue">0.000</span>
+                <span style="color: #7f95ad;">to</span>
+                <span id="farEndValue">0.240</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Consolidated results table -->
+        <table class="analysis-results-table">
+          <thead>
+            <tr>
+              <th>Identity</th>
+              <th>Slope</th>
+              <th>Intercept</th>
+              <th>R²</th>
+              <th>Kd</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>CO_NEAR</td>
+              <td id="coNearSlope">-</td>
+              <td id="coNearIntercept">-</td>
+              <td id="coNearR2">-</td>
+              <td id="coNearKd">-</td>
+            </tr>
+            <tr>
+              <td>CROSS_NEAR</td>
+              <td id="crossNearSlope">-</td>
+              <td id="crossNearIntercept">-</td>
+              <td id="crossNearR2">-</td>
+              <td id="crossNearKd">-</td>
+            </tr>
+            <tr>
+              <td>CO_FAR</td>
+              <td id="coFarSlope">-</td>
+              <td id="coFarIntercept">-</td>
+              <td id="coFarR2">-</td>
+              <td id="coFarKd">-</td>
+            </tr>
+            <tr>
+              <td>CROSS_FAR</td>
+              <td id="crossFarSlope">-</td>
+              <td id="crossFarIntercept">-</td>
+              <td id="crossFarR2">-</td>
+              <td id="crossFarKd">-</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+      </div>
+    </section>
+  </main>
+
+<script>
+const APP_ROOT = {{ app_root | tojson }};
+const FS_HZ = 2.5e9;
+const C_LIGHT = 299792458;
+const REFRACTION_SW = 1.34;
+const C_SW = C_LIGHT / REFRACTION_SW;
+
+const state = {
+  metadata: null,
+  heatmaps: null,
+  heatmapsFiltered: null,
+  activeTimestamp: null,
+  activeIdentity: null,
+  activeWaveformTab: 'raw',
+  currentWaveformPayload: null,
+  currentPowerPayload: null,
+  currentLaserTempPayload: null,
+  currentAttitudePayload: null,
+  axisMode: 'bin',
+  pulseTimeMode: 'epoch',
+  rangeCorrectionEnabled: false,
+  rangeRef: 1.0,
+  maxXAxis: 1999,
+  heatmapTimeWindowStart: null,
+  nd1CorrEnabled: false,
+  logAxisEnabled: false,
+  analysisNearStart: 0.0,
+  analysisNearEnd: 0.24,
+  analysisFarStart: 0.0,
+  analysisFarEnd: 0.24,
+  fittedTraceIndices: [],
+  filterSigmaV: 1.5,
+  filterSigmaH: 4.0,
+  heatmapViewMode: 'raw',
+  activeWaveformTab: 'raw',
+};
+
+const palette = [
+  '#62d2a2', '#ffb347', '#7dd3fc', '#f87171', '#facc15', '#f472b6', '#a3e635', '#60a5fa'
+];
+
+const heatmapColorscale = [
+  [0.0, 'rgba(0,0,0,0)'],
+  [0.0001, '#00008B'],
+  [0.2, '#6495ED'],
+  [0.4, '#006400'],
+  [0.6, '#7FFF00'],
+  [0.8, '#FFFF00'],
+  [1.0, '#FF0000'],
+];
+
+function fmtEpoch(ms) {
+  const d = new Date(Number(ms));
+  return d.toISOString().replace('T', ' ').replace('Z', ' UTC');
+}
+
+function fmtMinuteSecond(ms) {
+  const value = Number(ms);
+  const totalSeconds = Math.floor(value / 1000);
+  const minutes = String(Math.floor(totalSeconds / 60) % 60).padStart(2, '0');
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  const millis = String(Math.floor(value % 1000)).padStart(3, '0');
+  return `${minutes}:${seconds}.${millis}`;
+}
+
+function fmtMinuteSecondForTicks(ms) {
+  // Format for axis ticks: omit .000 for whole-second values
+  const value = Number(ms);
+  const totalSeconds = Math.floor(value / 1000);
+  const minutes = String(Math.floor(totalSeconds / 60) % 60).padStart(2, '0');
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  const millis = Math.floor(value % 1000);
+  return millis === 0 ? `${minutes}:${seconds}` : `${minutes}:${seconds}.${String(millis).padStart(3, '0')}`;
+}
+
+function formatPulseTime(ms) {
+  if (state.pulseTimeMode === 'mmss') {
+    return fmtMinuteSecond(ms);
+  }
+  return String(Number(ms));
+}
+
+function pulseTimeAxisTitle() {
+  return state.pulseTimeMode === 'mmss' ? 'Pulse Time (mm:ss.fff)' : 'Pulse Time (Unix epoch ms)';
+}
+
+function heatmapTimeTicks(timestamps, identity) {
+  if (state.pulseTimeMode !== 'mmss') {
+    return {};
+  }
+
+  if (!timestamps || timestamps.length === 0) {
+    return {};
+  }
+
+  // Get the visible window range
+  const windowStart = state.heatmapTimeWindowStart || Math.min(...timestamps);
+  const windowEnd = windowStart + HEATMAP_WINDOW_DURATION;
+  
+  // Create ticks at regular 2-second intervals within the visible window
+  const intervalMs = 2000;
+  const tickvals = [];
+  const ticktext = [];
+  
+  // Start from the next interval boundary after windowStart
+  const firstTick = Math.ceil(windowStart / intervalMs) * intervalMs;
+  
+  for (let tick = firstTick; tick <= windowEnd; tick += intervalMs) {
+    tickvals.push(tick);
+    ticktext.push(fmtMinuteSecondForTicks(tick));
+  }
+  
+  // Always include the window end if not already there (except for cross identities to avoid clutter)
+  const isCrossIdentity = identity && (identity.toLowerCase().includes('cross_near') || identity.toLowerCase().includes('cross_far'));
+  if (!isCrossIdentity && (tickvals.length === 0 || tickvals[tickvals.length - 1] < windowEnd)) {
+    tickvals.push(windowEnd);
+    ticktext.push(fmtMinuteSecondForTicks(windowEnd));
+  }
+  
+  return {
+    tickmode: 'array',
+    tickvals,
+    ticktext,
+  };
+}
+
+function updateMetaBox(meta) {
+  const box = document.getElementById('metaBox');
+  const fileLabel = (meta.files && meta.files.length > 1)
+    ? `${meta.file_count} files loaded`
+    : `File: ${meta.file}`;
+  const lines = [
+    fileLabel,
+    `Rows: ${meta.total_rows}`,
+    `Samples/pulse: ${meta.samples_per_pulse}`,
+    `Identities: ${meta.identities.join(', ')}`,
+  ];
+  box.innerHTML = lines.map((l) => `<div>${l}</div>`).join('');
+}
+
+function clearPlots() {
+  document.getElementById('heatmapStrip').innerHTML = '';
+  document.getElementById('waveformTable').innerHTML = '';
+  document.getElementById('selectionInfo').textContent = 'Loading selected data...';
+  document.getElementById('anchorInfo').textContent = '';
+  state.currentPowerPayload = null;
+  state.currentLaserTempPayload = null;
+  state.currentAttitudePayload = null;
+  const chartEl = document.getElementById('waveformChart');
+  if (chartEl && chartEl.data) {
+    Plotly.purge(chartEl);
+  }
+}
+
+function ensureAttitudePayload(selectedIdentity) {
+  if (
+    state.currentAttitudePayload &&
+    state.currentAttitudePayload.identity === selectedIdentity &&
+    Array.isArray(state.currentAttitudePayload.timestamps)
+  ) {
+    return Promise.resolve(state.currentAttitudePayload);
+  }
+
+  return fetch(`/api/attitude?identity=${encodeURIComponent(selectedIdentity)}`)
+    .then((res) => {
+      if (!res.ok) {
+        throw new Error('Failed to load attitude data');
+      }
+      return res.json();
+    })
+    .then((payload) => {
+      state.currentAttitudePayload = payload;
+      return payload;
+    });
+}
+
+function renderAttitudeSeries(payload) {
+  updateAnchorInfo(state.currentWaveformPayload);
+  const x = payload.timestamps || [];
+  const roll = (payload.roll_deg || []).map((v) => (Number.isFinite(v) ? v : null));
+  const pitch = (payload.pitch_deg || []).map((v) => (Number.isFinite(v) ? v : null));
+  const yaw = (payload.yaw_deg || []).map((v) => (Number.isFinite(v) ? v : null));
+  const tilt = (payload.tilt_deg || []).map((v) => (Number.isFinite(v) ? v : null));
+
+  const traces = [
+    {
+      x,
+      y: roll,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Roll',
+      line: { width: 1.1, color: '#7dd3fc' },
+      hovertemplate: 'Roll<br>Time: %{x}<br>Deg: %{y:.3f}<extra></extra>',
+    },
+    {
+      x,
+      y: pitch,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Pitch',
+      line: { width: 1.1, color: '#ffb347' },
+      hovertemplate: 'Pitch<br>Time: %{x}<br>Deg: %{y:.3f}<extra></extra>',
+    },
+    {
+      x,
+      y: yaw,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Yaw',
+      line: { width: 1.1, color: '#f472b6' },
+      hovertemplate: 'Yaw<br>Time: %{x}<br>Deg: %{y:.3f}<extra></extra>',
+    },
+    {
+      x,
+      y: tilt,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Tilt',
+      line: { width: 3.0, color: '#62d2a2' },
+      hovertemplate: 'Tilt<br>Time: %{x}<br>Deg: %{y:.3f}<extra></extra>',
+    },
+  ];
+
+  const layout = {
+    height: 440,
+    margin: { l: 64, r: 28, t: 24, b: 62 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: pulseTimeAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      tickangle: 0,
+      ...pulseTimeChartTicks(x),
+    },
+    yaxis: {
+      title: 'Attitude (deg)',
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      range: [-180, 180],
+      zeroline: true,
+      zerolinecolor: '#6f8096',
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.14,
+      x: 0,
+      font: { color: '#d7dee5' }
+    }
+  };
+
+  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+
+  const table = document.getElementById('waveformTable');
+  const points = x.length;
+  table.innerHTML = (
+    `<div class="row"><span class="name">${payload.identity}</span>` +
+    `<span>points: ${points}</span>` +
+    `<span>range: -180..180 deg</span>` +
+    `<span>series: Roll, Pitch, Yaw, Tilt</span></div>`
+  );
+}
+
+function ensureLaserTempPayload(selectedIdentity) {
+  if (
+    state.currentLaserTempPayload &&
+    state.currentLaserTempPayload.identity === selectedIdentity &&
+    Array.isArray(state.currentLaserTempPayload.timestamps)
+  ) {
+    return Promise.resolve(state.currentLaserTempPayload);
+  }
+
+  return fetch(`/api/laser-temp?identity=${encodeURIComponent(selectedIdentity)}`)
+    .then((res) => {
+      if (!res.ok) {
+        throw new Error('Failed to load laser temperature data');
+      }
+      return res.json();
+    })
+    .then((payload) => {
+      state.currentLaserTempPayload = payload;
+      return payload;
+    });
+}
+
+function renderLaserTempSeries(payload) {
+  updateAnchorInfo(state.currentWaveformPayload);
+  const x = payload.timestamps || [];
+  const y = (payload.laser_temp_c || []).map((v) => (Number.isFinite(v) ? v : null));
+
+  const traces = [
+    {
+      x,
+      y,
+      type: 'scatter',
+      mode: 'lines',
+      name: `LaserTempC (${payload.identity})`,
+      line: { width: 2.3, color: '#7dd3fc' },
+      hovertemplate: 'LaserTempC<br>Time: %{x}<br>Temp: %{y:.3f} C<extra></extra>',
+    }
+  ];
+
+  const layout = {
+    height: 440,
+    margin: { l: 64, r: 28, t: 24, b: 62 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: pulseTimeAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      tickangle: 0,
+      ...pulseTimeChartTicks(x),
+    },
+    yaxis: {
+      title: 'LaserTempC',
+      color: '#d7dee5',
+      gridcolor: '#253347',
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.14,
+      x: 0,
+      font: { color: '#d7dee5' }
+    }
+  };
+
+  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+
+  const table = document.getElementById('waveformTable');
+  const points = x.length;
+  table.innerHTML = (
+    `<div class="row"><span class="name">${payload.identity}</span>` +
+    `<span>points: ${points}</span>` +
+    `<span>series: LaserTempC</span>` +
+    `<span>axis: Pulse Time</span></div>`
+  );
+}
+
+function timeSeriesChartTicks(timestamps) {
+  if (state.pulseTimeMode !== 'mmss') {
+    return {};
+  }
+
+  if (!timestamps || timestamps.length === 0) {
+    return {};
+  }
+
+  const minTime = Math.min(...timestamps);
+  const maxTime = Math.max(...timestamps);
+  const totalDuration = maxTime - minTime;
+  
+  // Pick interval based on total duration
+  let intervalMs;
+  if (totalDuration <= 10000) {
+    intervalMs = 1000;  // 1 second
+  } else if (totalDuration <= 30000) {
+    intervalMs = 5000;  // 5 seconds
+  } else if (totalDuration <= 120000) {
+    intervalMs = 10000; // 10 seconds
+  } else if (totalDuration <= 600000) {
+    intervalMs = 30000; // 30 seconds
+  } else {
+    intervalMs = 60000; // 1 minute
+  }
+  
+  const tickvals = [];
+  const ticktext = [];
+  
+  // Start from the next interval boundary after minTime
+  const firstTick = Math.ceil(minTime / intervalMs) * intervalMs;
+  
+  for (let tick = firstTick; tick <= maxTime; tick += intervalMs) {
+    tickvals.push(tick);
+    ticktext.push(fmtMinuteSecond(tick));
+  }
+  
+  // Always include the max time if not already there
+  if (tickvals.length === 0 || tickvals[tickvals.length - 1] < maxTime) {
+    tickvals.push(maxTime);
+    ticktext.push(fmtMinuteSecond(maxTime));
+  }
+  
+  return {
+    tickmode: 'array',
+    tickvals,
+    ticktext,
+  };
+}
+
+function pulseTimeChartTicks(timestamps) {
+  if (state.pulseTimeMode !== 'mmss') {
+    return {};
+  }
+  return timeSeriesChartTicks(timestamps);
+}
+
+function buildPowerTable(payload) {
+  const table = document.getElementById('waveformTable');
+  const points = payload.timestamps.length;
+  table.innerHTML = (
+    `<div class="row"><span class="name">All Power Data</span>` +
+    `<span>points: ${points}</span></div>`
+  );
+}
+
+function ensurePowerPayload() {
+  if (
+    state.currentPowerPayload &&
+    Array.isArray(state.currentPowerPayload.timestamps)
+  ) {
+    return Promise.resolve(state.currentPowerPayload);
+  }
+
+  return fetch(`/api/power`)
+    .then((res) => {
+      if (!res.ok) {
+        throw new Error('Failed to load power data');
+      }
+      return res.json();
+    })
+    .then((payload) => {
+      state.currentPowerPayload = payload;
+      return payload;
+    });
+}
+
+function renderPowerSeries(payload) {
+  updateAnchorInfo(state.currentWaveformPayload);
+  let x = payload.timestamps || [];
+  let aMin = payload.power_a_min || [];
+  let aMax = payload.power_a_max || [];
+  let bMin = payload.power_b_min || [];
+  let bMax = payload.power_b_max || [];
+  let ratioMin = payload.ratio_ba_min || [];
+  let ratioMax = payload.ratio_ba_max || [];
+
+  // Sort all arrays by timestamp to avoid diagonal line connections
+  if (x.length > 0) {
+    const indices = Array.from({ length: x.length }, (_, i) => i);
+    indices.sort((i, j) => Number(x[i]) - Number(x[j]));
+    
+    x = indices.map(i => x[i]);
+    aMin = indices.map(i => aMin[i]);
+    aMax = indices.map(i => aMax[i]);
+    bMin = indices.map(i => bMin[i]);
+    bMax = indices.map(i => bMax[i]);
+    ratioMin = indices.map(i => ratioMin[i]);
+    ratioMax = indices.map(i => ratioMax[i]);
+  }
+
+  const traces = [
+    {
+      x,
+      y: aMin.map(v => v === null || v === undefined ? NaN : Number(v)),
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Power A Min',
+      line: { width: 2, color: '#7ed6ff', shape: 'linear' },
+      hovertemplate: 'Power A Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+    },
+    {
+      x,
+      y: aMax.map(v => v === null || v === undefined ? NaN : Number(v)),
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Power A Max',
+      line: { width: 2, color: '#0ea5e9', shape: 'linear' },
+      hovertemplate: 'Power A Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+    },
+    {
+      x,
+      y: bMin.map(v => v === null || v === undefined ? NaN : Number(v)),
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Power B Min',
+      line: { width: 2, color: '#fbbf24', shape: 'linear' },
+      hovertemplate: 'Power B Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+    },
+    {
+      x,
+      y: bMax.map(v => v === null || v === undefined ? NaN : Number(v)),
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Power B Max',
+      line: { width: 2, color: '#f97316', shape: 'linear' },
+      hovertemplate: 'Power B Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+    },
+    {
+      x,
+      y: ratioMin.map(v => v === null || v === undefined ? NaN : Number(v)),
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Ratio B/A Min',
+      line: { width: 2, color: '#a78bfa', shape: 'linear' },
+      hovertemplate: 'Ratio B/A Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+    },
+    {
+      x,
+      y: ratioMax.map(v => v === null || v === undefined ? NaN : Number(v)),
+      type: 'scatter',
+      mode: 'lines',
+      name: 'Ratio B/A Max',
+      line: { width: 2, color: '#d946ef', shape: 'linear' },
+      hovertemplate: 'Ratio B/A Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+    },
+  ];
+
+  const layout = {
+    height: 660,
+    margin: { l: 64, r: 28, t: 24, b: 62 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: pulseTimeAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      tickangle: 0,
+      ...pulseTimeChartTicks(x),
+    },
+    yaxis: {
+      title: 'Power',
+      color: '#d7dee5',
+      gridcolor: '#253347',
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.14,
+      x: 0,
+      font: { color: '#d7dee5' }
+    }
+  };
+
+  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+  buildPowerTable(payload);
+}
+
+function updateAnchorInfo(payload) {
+  const el = document.getElementById('anchorInfo');
+  el.textContent = '';
+}
+
+function binToRange(binValue) {
+  return (Number(binValue) * C_SW) / (2 * FS_HZ);
+}
+
+const MAX_BIN = 1999;
+const MAX_RANGE = binToRange(MAX_BIN);
+const HEATMAP_WINDOW_DURATION = 10000; // 10 seconds in milliseconds
+
+function getMaxXAxisValue() {
+  return state.axisMode === 'range' ? MAX_RANGE : MAX_BIN;
+}
+
+function getXAxisRange(xValues) {
+  if (!xValues || xValues.length === 0) {
+    return [0, 1];
+  }
+  const start = xValues[0];
+  const maxAllowed = getMaxXAxisValue();
+  // Convert state.maxXAxis to correct units based on axis mode
+  const maxXAxisValue = state.axisMode === 'range' 
+    ? binToRange(state.maxXAxis)
+    : state.maxXAxis;
+  const end = Math.min(xValues[xValues.length - 1], maxXAxisValue, maxAllowed);
+  return [start, end];
+}
+
+function axisValuesFromBins(bins) {
+  if (state.axisMode === 'range') {
+    return bins.map((b) => binToRange(b));
+  }
+  return bins;
+}
+
+function axisTitleForBins() {
+  return state.axisMode === 'range' ? 'Range (m)' : 'Bin Number';
+}
+
+function waveformXAxisTitle() {
+  return state.axisMode === 'range' ? 'Range (m)' : 'Sample Bin (0-1999)';
+}
+
+function waveformYAxisTitle() {
+  if (!state.rangeCorrectionEnabled) {
+    return 'Waveform Value';
+  }
+  return `Waveform Value x (R/${state.rangeRef.toFixed(2)}m)^2`;
+}
+
+function sanitizeRangeRef(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return 1.0;
+  }
+  return numeric;
+}
+
+function rangeCorrectionFactorsFromBins(bins) {
+  return bins.map((bin) => {
+    const range = binToRange(bin);
+    return (range / state.rangeRef) ** 2;
+  });
+}
+
+function applyRangeCorrectionToWaveform(samples, bins) {
+  if (!state.rangeCorrectionEnabled) {
+    return samples;
+  }
+
+  const factors = rangeCorrectionFactorsFromBins(bins);
+  return samples.map((sample, idx) => Number(sample) * (factors[idx] ?? 1));
+}
+
+function applyRangeCorrectionToHeatmap(zRows, bins) {
+  if (!state.rangeCorrectionEnabled) {
+    return zRows;
+  }
+
+  const factors = rangeCorrectionFactorsFromBins(bins);
+  return zRows.map((row, rowIdx) => {
+    const factor = factors[rowIdx] ?? 1;
+    return row.map((value) => Number(value) * factor);
+  });
+}
+
+function applyND1CorrectionToWaveform(samples, identity) {
+  // Apply 10x multiplier to CO_NEAR when ND1 correction is enabled
+  if (!state.nd1CorrEnabled || !identity || !identity.toLowerCase().includes('co_near')) {
+    return samples;
+  }
+  return samples.map((sample) => Number(sample) * 10);
+}
+
+function applyND1CorrectionToHeatmap(zRows, identity) {
+  // Apply 10x multiplier to CO_NEAR heatmap when ND1 correction is enabled
+  if (!state.nd1CorrEnabled || !identity || !identity.toLowerCase().includes('co_near')) {
+    return zRows;
+  }
+  return zRows.map((row) => row.map((value) => Number(value) * 10));
+}
+
+function matrixMax(zRows) {
+  let maxValue = 0;
+  for (const row of zRows) {
+    for (const value of row) {
+      if (value > maxValue) {
+        maxValue = value;
+      }
+    }
+  }
+  return maxValue;
+}
+
+async function loadPath(pathValue) {
+  const response = await fetch('/api/load-path', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: pathValue })
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load path');
+  }
+}
+
+async function loadFiles(fileList) {
+  const form = new FormData();
+  for (const file of fileList) {
+    if (file.name.toLowerCase().endsWith('.csv')) {
+      form.append('files', file);
+    }
+  }
+
+  const response = await fetch('/api/load-files', {
+    method: 'POST',
+    body: form,
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load uploaded files');
+  }
+}
+
+function bestPathForFile(file) {
+  const raw = file.path || file.webkitRelativePath || file.name;
+  if (!raw) return '';
+  const normalized = raw.replace(/\\/g, '/');
+  if (normalized.startsWith('/')) {
+    return normalized;
+  }
+  return `${APP_ROOT.replace(/\\/g, '/')}/${normalized}`;
+}
+
+function directoryPathFromFile(file) {
+  const absoluteFilePath = file.path || '';
+  const relativeFilePath = file.webkitRelativePath || '';
+
+  if (absoluteFilePath && relativeFilePath.includes('/')) {
+    const relativeParts = relativeFilePath.split('/');
+    const topDir = relativeParts[0];
+    const topDirIndex = absoluteFilePath.lastIndexOf(topDir);
+    if (topDirIndex >= 0) {
+      const base = absoluteFilePath.slice(0, topDirIndex + topDir.length).replace(/\\/g, '/');
+      return base.endsWith('/') ? base : `${base}/`;
+    }
+  }
+
+  if (absoluteFilePath) {
+    const slashIndex = Math.max(absoluteFilePath.lastIndexOf('/'), absoluteFilePath.lastIndexOf('\\'));
+    const base = (slashIndex >= 0 ? absoluteFilePath.slice(0, slashIndex) : absoluteFilePath).replace(/\\/g, '/');
+    return base.endsWith('/') ? base : `${base}/`;
+  }
+
+  if (relativeFilePath) {
+    const relativeSlash = relativeFilePath.lastIndexOf('/');
+    const base = relativeSlash >= 0 ? relativeFilePath.slice(0, relativeSlash) : relativeFilePath;
+    const normalizedBase = base.replace(/\\/g, '/');
+    const full = normalizedBase.startsWith('/')
+      ? normalizedBase
+      : `${APP_ROOT.replace(/\\/g, '/')}/${normalizedBase}`;
+    return full.endsWith('/') ? full : `${full}/`;
+  }
+
+  const fallback = (file.name || '').replace(/\\/g, '/');
+  const fullFallback = fallback.startsWith('/')
+    ? fallback
+    : `${APP_ROOT.replace(/\\/g, '/')}/${fallback}`;
+  return fullFallback.endsWith('/') ? fullFallback : `${fullFallback}/`;
+}
+
+async function reloadDataset() {
+  clearPlots();
+  state.heatmapTimeWindowStart = null;
+  await boot();
+}
+
+function renderHeatmaps() {
+  const strip = document.getElementById('heatmapStrip');
+  strip.innerHTML = '';
+
+  // Select heatmap dataset based on view mode
+  const heatmapDataset = state.heatmapViewMode === 'filtered' ? state.heatmapsFiltered : state.heatmaps;
+  console.log('renderHeatmaps() called with mode:', state.heatmapViewMode, 'dataset has', heatmapDataset?.identities?.length || 0, 'identities');
+  if (!heatmapDataset) return;
+
+  // Initialize time window start if not set
+  if (state.heatmapTimeWindowStart === null) {
+    const allTimestamps = [];
+    heatmapDataset.identities.forEach((identity) => {
+      const series = heatmapDataset.series[identity];
+      allTimestamps.push(...series.timestamps);
+    });
+    if (allTimestamps.length > 0) {
+      state.heatmapTimeWindowStart = Math.min(...allTimestamps);
+    }
+  }
+
+  // Organize identities by type within near/far
+  const typeOrder = { 'cross': 0, 'co': 1, 'raman': 2 };
+  const nearIds = [];
+  const farIds = [];
+  
+  heatmapDataset.identities.forEach((id) => {
+    const lowerID = id.toLowerCase();
+    if (lowerID.includes('_near')) {
+      nearIds.push(id);
+    } else if (lowerID.includes('_far')) {
+      farIds.push(id);
+    }
+  });
+
+  const sortByType = (a, b) => {
+    const aType = Object.keys(typeOrder).find(t => a.toLowerCase().includes(t)) || 'unknown';
+    const bType = Object.keys(typeOrder).find(t => b.toLowerCase().includes(t)) || 'unknown';
+    return (typeOrder[aType] ?? 999) - (typeOrder[bType] ?? 999);
+  };
+
+  nearIds.sort(sortByType);
+  farIds.sort(sortByType);
+
+  // Create near row (3 heatmaps: cross, co, raman)
+  const nearRow = document.createElement('div');
+  nearRow.className = 'heatmap-row';
+
+  nearIds.forEach((identity, idx) => {
+    const series = heatmapDataset.series[identity];
+    buildHeatmapPanel(identity, series, idx, nearRow);
+  });
+
+  strip.appendChild(nearRow);
+
+  // Create far row (3 heatmaps: cross, co, raman)
+  const farRow = document.createElement('div');
+  farRow.className = 'heatmap-row';
+
+  farIds.forEach((identity, idx) => {
+    const series = heatmapDataset.series[identity];
+    buildHeatmapPanel(identity, series, idx, farRow);
+  });
+
+  strip.appendChild(farRow);
+
+  if (state.activeTimestamp !== null) {
+    updateHeatmapCursor(state.activeTimestamp);
+  }
+
+  updateHeatmapSlider();
+}
+
+function getHeatmapXAxisRange() {
+  if (!state.heatmaps || !state.heatmapTimeWindowStart) {
+    return [0, 1];
+  }
+  const windowStart = state.heatmapTimeWindowStart;
+  const windowEnd = windowStart + HEATMAP_WINDOW_DURATION;
+  return [windowStart, windowEnd];
+}
+
+function sortHeatmapIdentities(identities) {
+  const typeOrder = { 'cross': 0, 'co': 1, 'raman': 2 };
+  const nearIds = [];
+  const farIds = [];
+
+  identities.forEach((id) => {
+    const lowerID = id.toLowerCase();
+    if (lowerID.includes('_near')) {
+      nearIds.push(id);
+    } else if (lowerID.includes('_far')) {
+      farIds.push(id);
+    }
+  });
+
+  const sortByType = (a, b) => {
+    const aType = Object.keys(typeOrder).find(t => a.toLowerCase().includes(t)) || 'unknown';
+    const bType = Object.keys(typeOrder).find(t => b.toLowerCase().includes(t)) || 'unknown';
+    return (typeOrder[aType] ?? 999) - (typeOrder[bType] ?? 999);
+  };
+
+  nearIds.sort(sortByType);
+  farIds.sort(sortByType);
+
+  return { nearIds, farIds };
+}
+
+function buildHeatmapPanel(identity, series, index, parentRow) {
+  const panel = document.createElement('div');
+  panel.className = 'heatmap-panel';
+
+  const title = document.createElement('div');
+  title.className = 'panel-title';
+  title.textContent = identity;
+  panel.appendChild(title);
+
+  const plot = document.createElement('div');
+  plot.id = `heatmap-${identity}`;
+  plot.className = 'plot';
+  panel.appendChild(plot);
+
+  parentRow.appendChild(panel);
+
+  // Log the raw z-values before any corrections
+  const rawZMin = Math.min(...series.z.map(row => Math.min(...row)));
+  const rawZMax = Math.max(...series.z.map(row => Math.max(...row)));
+  console.log(`[${identity}] Raw z-values: min=${rawZMin}, max=${rawZMax}, mode=${state.heatmapViewMode}`);
+
+  const zValues = applyRangeCorrectionToHeatmap(series.z, series.bins);
+  const zCorrected = applyND1CorrectionToHeatmap(zValues, identity);
+  // Adjust color scale for ND1 corrected CO_NEAR (0-20470 instead of 0-2047)
+  const isCoNear = identity.toLowerCase().includes('co_near');
+  const zMaxValue = (state.nd1CorrEnabled && isCoNear) ? 20470 : 2047;
+  const hoverTimeGrid = series.z.map(() => series.timestamps.map((ts) => formatPulseTime(ts)));
+
+  const isRaman = identity.toLowerCase().includes('raman');
+  const trace = {
+    x: series.timestamps,
+    text: hoverTimeGrid,
+    y: axisValuesFromBins(series.bins),
+    z: zCorrected,
+    type: 'heatmap',
+    colorscale: heatmapColorscale,
+    zmin: 0,
+    zmax: zMaxValue,
+    hovertemplate: 'Identity: ' + identity + '<br>Time: %{text}<br>Y: %{y}<br>Value: %{z}<extra></extra>',
+    colorbar: isRaman ? {
+      thickness: 15,
+      thicknessmode: 'pixels',
+      tickvals: [0, 2047],
+      ticktext: ['0', '2047'],
+      tickfont: { color: '#d7dee5', size: 10 },
+      x: 1.02
+    } : undefined,
+    showscale: isRaman,
+  };
+
+  const xAxisRange = getHeatmapXAxisRange();
+  const layout = {
+    height: 340,
+    margin: { l: 64, r: 24, t: 20, b: 56 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: pulseTimeAxisTitle(),
+      tickangle: 0,
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      zerolinecolor: '#253347',
+      range: xAxisRange,
+      ...heatmapTimeTicks(series.timestamps, identity)
+    },
+    yaxis: {
+      title: axisTitleForBins(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      zerolinecolor: '#253347',
+      range: state.axisMode === 'range' 
+        ? [binToRange(state.maxXAxis), 0]
+        : [state.maxXAxis, 0]
+    },
+  };
+
+  Plotly.newPlot(plot, [trace], layout, {displayModeBar: true, responsive: false});
+
+  plot.on('plotly_click', (ev) => {
+    const p = ev.points?.[0];
+    if (!p) return;
+    const clickedTs = Number(p.x);
+    selectTimestamp(clickedTs, identity);
+  });
+}
+
+function updateHeatmapCursor(ts) {
+  if (!state.heatmaps) return;
+  for (const identity of state.heatmaps.identities) {
+    const plot = document.getElementById(`heatmap-${identity}`);
+    if (!plot) continue;
+    const yStart = state.axisMode === 'range' ? binToRange(0) : 0;
+    const yEnd = state.axisMode === 'range'
+      ? binToRange(state.metadata.samples_per_pulse - 1)
+      : state.metadata.samples_per_pulse - 1;
+    Plotly.relayout(plot, {
+      shapes: [{
+        type: 'line',
+        x0: ts,
+        x1: ts,
+        y0: yStart,
+        y1: yEnd,
+        line: { color: '#fef08a', width: 2, dash: 'dot' }
+      }]
+    });
+  }
+}
+
+async function selectTimestamp(timestamp, sourceIdentity) {
+  state.activeTimestamp = Number(timestamp);
+  state.activeIdentity = sourceIdentity;
+  updateHeatmapCursor(state.activeTimestamp);
+
+  const info = document.getElementById('selectionInfo');
+  info.textContent = `Selected ${state.activeTimestamp} (${fmtEpoch(state.activeTimestamp)}) from ${sourceIdentity}`;
+
+  const response = await fetch(`/api/waveforms?timestamp=${state.activeTimestamp}&sigma_v=${state.filterSigmaV}&sigma_h=${state.filterSigmaH}`);
+  const payload = await response.json();
+  state.currentWaveformPayload = payload;
+  renderCurrentWaveformTab();
+}
+
+function extractFilteredWaveformsFromHeatmaps(timestamp) {
+  /**
+   * (Deprecated: Kept for reference but not currently used)
+   * Extract filtered waveforms at a given timestamp from the filtered heatmaps.
+   */
+  if (!state.heatmapsFiltered || !state.currentWaveformPayload) {
+    return null;
+  }
+
+  const waveforms = [];
+  state.heatmapsFiltered.identities.forEach((identity) => {
+    const series = state.heatmapsFiltered.series[identity];
+    if (!series) return;
+
+    const tsIndex = series.timestamps.indexOf(timestamp);
+    if (tsIndex === -1) return;
+
+    const waveform = series.z.map((row) => row[tsIndex]);
+    const originalWaveform = state.currentWaveformPayload.waveforms.find(w => w.identity === identity);
+    
+    waveforms.push({
+      identity,
+      timestamp,
+      waveform,
+      tilt_deg: originalWaveform?.tilt_deg || 0,
+      delta_ms: originalWaveform?.delta_ms || 0,
+    });
+  });
+
+  return waveforms;
+}
+
+
+function renderFilteredWaveforms(payload) {
+  /**
+   * Render filtered waveforms using the filtered waveforms from the payload.
+   * Backend computes 2D Gaussian filtered waveforms based on sigma_v and sigma_h.
+   */
+  updateAnchorInfo(payload);
+  
+  // Use the filtered waveforms from the payload
+  const waveforms = payload.waveforms_filtered || payload.waveforms;
+  if (!waveforms || waveforms.length === 0) {
+    document.getElementById('waveformChart').innerHTML = '<p>No waveforms available</p>';
+    return;
+  }
+
+  const xValues = axisValuesFromBins(payload.bins);
+  const traces = waveforms.map((w, idx) => ({
+    x: xValues,
+    y: applyND1CorrectionToWaveform(applyRangeCorrectionToWaveform(w.waveform, payload.bins), w.identity),
+    type: 'scattergl',
+    mode: 'lines',
+    name: `${w.identity} @ ${formatPulseTime(w.timestamp)}`,
+    line: {
+      width: 2,
+      color: palette[idx % palette.length]
+    },
+    hovertemplate: `${w.identity}<br>Bin: %{x}<br>Value: %{y}<extra></extra>`
+  }));
+
+  const chartEl = document.getElementById('waveformChart');
+  if (chartEl && chartEl.data) {
+    Plotly.purge(chartEl);
+  }
+
+  const layout = {
+    height: 660,
+    margin: { l: 64, r: 28, t: 24, b: 62 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: waveformXAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      zerolinecolor: '#253347',
+      zerolinewidth: 0,
+    },
+    yaxis: {
+      title: 'Value',
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      type: state.logAxisEnabled ? 'log' : 'linear',
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.14,
+      x: 0,
+      font: { color: '#d7dee5' }
+    }
+  };
+
+  Plotly.newPlot('waveformChart', traces, layout, { displayModeBar: true, responsive: true });
+
+  const table = document.getElementById('waveformTable');
+  table.innerHTML = waveforms.map((w) => (
+    `<div class="row"><span class="name">${w.identity}</span>` +
+    `<span>actual ts: ${formatPulseTime(w.timestamp)}</span>` +
+    `<span>delta: ${w.delta_ms} ms</span>` +
+    `<span>tilt: ${w.tilt_deg.toFixed(2)} deg</span></div>`
+  )).join('');
+}
+
+function renderResidualsWaveforms(payload) {
+  /**
+   * Render residual waveforms (Raw - Filtered) for each identity.
+   * Shows the difference between raw and filtered waveforms after corrections.
+   */
+  updateAnchorInfo(payload);
+  
+  // Compute residuals: raw - filtered
+  const rawWaveforms = payload.waveforms || [];
+  const filteredWaveforms = payload.waveforms_filtered || [];
+  
+  if (!rawWaveforms || rawWaveforms.length === 0) {
+    document.getElementById('waveformChart').innerHTML = '<p>No waveforms available</p>';
+    return;
+  }
+
+  const xValues = axisValuesFromBins(payload.bins);
+  const traces = rawWaveforms.map((rawW, idx) => {
+    // Find corresponding filtered waveform
+    const filteredW = filteredWaveforms.find(w => w.identity === rawW.identity) || rawW;
+    
+    // Apply corrections to both raw and filtered
+    const rawCorrected = applyND1CorrectionToWaveform(applyRangeCorrectionToWaveform(rawW.waveform, payload.bins), rawW.identity);
+    const filteredCorrected = applyND1CorrectionToWaveform(applyRangeCorrectionToWaveform(filteredW.waveform, payload.bins), filteredW.identity);
+    
+    // Compute residuals: raw - filtered
+    const residuals = rawCorrected.map((val, i) => val - filteredCorrected[i]);
+    
+    return {
+      x: xValues,
+      y: residuals,
+      type: 'scattergl',
+      mode: 'lines',
+      name: `${rawW.identity} @ ${formatPulseTime(rawW.timestamp)}`,
+      line: {
+        width: 2,
+        color: palette[idx % palette.length]
+      },
+      hovertemplate: `${rawW.identity}<br>Bin: %{x}<br>Residual: %{y}<extra></extra>`
+    };
+  });
+
+  const chartEl = document.getElementById('waveformChart');
+  if (chartEl && chartEl.data) {
+    Plotly.purge(chartEl);
+  }
+
+  const layout = {
+    height: 660,
+    margin: { l: 64, r: 28, t: 24, b: 62 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: waveformXAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      zerolinecolor: '#253347',
+      zerolinewidth: 0,
+    },
+    yaxis: {
+      title: 'Residual (Raw - Filtered)',
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      zerolinecolor: '#da6e5c',
+      zerolinewidth: 2,
+      type: state.logAxisEnabled ? 'log' : 'linear',
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.14,
+      x: 0,
+      font: { color: '#d7dee5' }
+    }
+  };
+
+  Plotly.newPlot('waveformChart', traces, layout, { displayModeBar: true, responsive: true });
+
+  const table = document.getElementById('waveformTable');
+  table.innerHTML = rawWaveforms.map((w) => (
+    `<div class="row"><span class="name">${w.identity}</span>` +
+    `<span>actual ts: ${formatPulseTime(w.timestamp)}</span>` +
+    `<span>delta: ${w.delta_ms} ms</span>` +
+    `<span>tilt: ${w.tilt_deg.toFixed(2)} deg</span></div>`
+  )).join('');
+}
+
+function renderRawWaveforms(payload) {
+  updateAnchorInfo(payload);
+  const xValues = axisValuesFromBins(payload.bins);
+  const traces = payload.waveforms.map((w, idx) => ({
+    x: xValues,
+    y: applyND1CorrectionToWaveform(applyRangeCorrectionToWaveform(w.waveform, payload.bins), w.identity),
+    type: 'scattergl',
+    mode: 'lines',
+    name: `${w.identity} @ ${formatPulseTime(w.timestamp)}`,
+    line: {
+      width: 2,
+      color: palette[idx % palette.length]
+    },
+    hovertemplate: `${w.identity}<br>Bin: %{x}<br>Value: %{y}<extra></extra>`
+  }));
+
+  const chartEl = document.getElementById('waveformChart');
+  if (chartEl && chartEl.data) {
+    Plotly.purge(chartEl);
+  }
+
+  const layout = {
+    height: 660,
+    margin: { l: 64, r: 28, t: 24, b: 62 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: waveformXAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      range: getXAxisRange(xValues)
+    },
+    yaxis: {
+      title: waveformYAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      type: state.logAxisEnabled ? 'log' : 'linear'
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.14,
+      x: 0,
+      font: { color: '#d7dee5' }
+    }
+  };
+
+  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+
+  const table = document.getElementById('waveformTable');
+  table.innerHTML = payload.waveforms.map((w) => (
+    `<div class="row"><span class="name">${w.identity}</span>` +
+    `<span>actual ts: ${formatPulseTime(w.timestamp)}</span>` +
+    `<span>delta: ${w.delta_ms} ms</span>` +
+    `<span>tilt: ${w.tilt_deg.toFixed(2)} deg</span></div>`
+  )).join('');
+}
+
+function computeDepolSeries(payload) {
+  const byIdentity = {};
+  for (const row of payload.waveforms) {
+    byIdentity[row.identity] = row;
+  }
+
+  const crossFar = byIdentity['cross_far']?.waveform;
+  const coFar = byIdentity['co_far']?.waveform;
+  const crossNear = byIdentity['cross_near']?.waveform;
+  let coNear = byIdentity['co_near']?.waveform;
+
+  // Apply ND1 correction to CO_NEAR if enabled
+  if (state.nd1CorrEnabled && coNear) {
+    coNear = applyND1CorrectionToWaveform(coNear, 'co_near');
+  }
+
+  const bins = payload.bins || [];
+  const depolFar = [];
+  const depolNear = [];
+
+  for (let i = 0; i < bins.length; i += 1) {
+    const cf = crossFar?.[i] ?? 0;
+    const cof = coFar?.[i] ?? 0;
+    const cn = crossNear?.[i] ?? 0;
+    const con = coNear?.[i] ?? 0;
+
+    const denomFar = cof;
+    const denomNear = con;
+    depolFar.push(denomFar > 0 ? cf / denomFar : 0);
+    depolNear.push(denomNear > 0 ? cn / denomNear : 0);
+  }
+
+  return { bins, depolFar, depolNear };
+}
+
+function renderDepolWaveforms(payload) {
+  updateAnchorInfo(payload);
+  const depol = computeDepolSeries(payload);
+  const xValues = axisValuesFromBins(depol.bins);
+
+  const traces = [
+    {
+      x: xValues,
+      y: depol.depolFar,
+      type: 'scattergl',
+      mode: 'lines',
+      name: '𝜹pol_far',
+      line: { width: 2.5, color: '#ffb347' },
+      hovertemplate: '𝜹pol_far<br>Bin: %{x}<br>Value: %{y:.4f}<extra></extra>'
+    },
+    {
+      x: xValues,
+      y: depol.depolNear,
+      type: 'scattergl',
+      mode: 'lines',
+      name: '𝜹pol_near',
+      line: { width: 2.5, color: '#62d2a2' },
+      hovertemplate: '𝜹pol_near<br>Bin: %{x}<br>Value: %{y:.4f}<extra></extra>'
+    }
+  ];
+
+  const layout = {
+    height: 660,
+    margin: { l: 64, r: 28, t: 24, b: 62 },
+    paper_bgcolor: '#0f1622',
+    plot_bgcolor: '#0f1622',
+    xaxis: {
+      title: waveformXAxisTitle(),
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      range: getXAxisRange(xValues)
+    },
+    yaxis: {
+      title: 'Depolarization Ratio',
+      color: '#d7dee5',
+      gridcolor: '#253347',
+      range: [0, 1]
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.14,
+      x: 0,
+      font: { color: '#d7dee5' }
+    }
+  };
+
+  const chartEl = document.getElementById('waveformChart');
+  if (chartEl && chartEl.data) {
+    Plotly.purge(chartEl);
+  }
+
+  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+
+  const table = document.getElementById('waveformTable');
+  table.innerHTML = payload.waveforms.map((w) => (
+    `<div class="row"><span class="name">${w.identity}</span>` +
+    `<span>actual ts: ${formatPulseTime(w.timestamp)}</span>` +
+    `<span>delta: ${w.delta_ms} ms</span>` +
+    `<span>tilt: ${w.tilt_deg.toFixed(2)} deg</span></div>`
+  )).join('');
+}
+
+function setWaveformTab(tabName) {
+  state.activeWaveformTab = tabName;
+  const tabRaw = document.getElementById('tabRaw');
+  const tabFiltered = document.getElementById('tabFiltered');
+  const tabResiduals = document.getElementById('tabResiduals');
+  const tabDepol = document.getElementById('tabDepol');
+  const tabPower = document.getElementById('tabPower');
+  const tabLaserTemp = document.getElementById('tabLaserTemp');
+  const tabAttitude = document.getElementById('tabAttitude');
+  const logAxisCheckbox = document.getElementById('logAxisCheckbox');
+  tabRaw.classList.toggle('active', tabName === 'raw');
+  tabFiltered.classList.toggle('active', tabName === 'filtered');
+  tabResiduals.classList.toggle('active', tabName === 'residuals');
+  tabDepol.classList.toggle('active', tabName === 'depol');
+  tabPower.classList.toggle('active', tabName === 'power');
+  tabLaserTemp.classList.toggle('active', tabName === 'laserTemp');
+  tabAttitude.classList.toggle('active', tabName === 'attitude');
+  // Show log axis checkbox for Raw, Filtered, and Residuals tabs
+  logAxisCheckbox.style.display = (tabName === 'raw' || tabName === 'filtered' || tabName === 'residuals') ? '' : 'none';
+  renderCurrentWaveformTab();
+  // Compute analysis when Raw tab is selected
+  if (tabName === 'raw') {
+    updateAnalysisResults();
+  }
+}
+
+function renderCurrentWaveformTab() {
+  if (!state.currentWaveformPayload) return;
+  if (state.activeWaveformTab === 'attitude') {
+    const identity = state.activeIdentity || state.currentWaveformPayload.waveforms?.[0]?.identity || '';
+    ensureAttitudePayload(identity)
+      .then((payload) => renderAttitudeSeries(payload))
+      .catch((err) => {
+        document.getElementById('waveformTable').innerHTML = '';
+        document.getElementById('selectionInfo').textContent = `Attitude view failed: ${err}`;
+      });
+    return;
+  }
+  if (state.activeWaveformTab === 'laserTemp') {
+    const identity = state.activeIdentity || state.currentWaveformPayload.waveforms?.[0]?.identity || '';
+    ensureLaserTempPayload(identity)
+      .then((payload) => renderLaserTempSeries(payload))
+      .catch((err) => {
+        document.getElementById('waveformTable').innerHTML = '';
+        document.getElementById('selectionInfo').textContent = `Laser Temp view failed: ${err}`;
+      });
+    return;
+  }
+  if (state.activeWaveformTab === 'power') {
+    ensurePowerPayload()
+      .then((payload) => renderPowerSeries(payload))
+      .catch((err) => {
+        document.getElementById('waveformTable').innerHTML = '';
+        document.getElementById('selectionInfo').textContent = `Power view failed: ${err}`;
+      });
+    return;
+  }
+  if (state.activeWaveformTab === 'filtered') {
+    renderFilteredWaveforms(state.currentWaveformPayload);
+    return;
+  }
+  if (state.activeWaveformTab === 'residuals') {
+    renderResidualsWaveforms(state.currentWaveformPayload);
+    return;
+  }
+  if (state.activeWaveformTab === 'depol') {
+    renderDepolWaveforms(state.currentWaveformPayload);
+    return;
+  }
+  renderRawWaveforms(state.currentWaveformPayload);
+}
+
+function computeLinearRegression(x, y) {
+  // Compute slope, intercept, and R² for linear fit y = a + b*x
+  if (!x || !y || x.length < 2) {
+    return null;
+  }
+  
+  const n = x.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+  
+  for (let i = 0; i < n; i++) {
+    const xi = Number(x[i]);
+    const yi = Number(y[i]);
+    if (!Number.isFinite(xi) || !Number.isFinite(yi)) {
+      continue;
+    }
+    sumX += xi;
+    sumY += yi;
+    sumXY += xi * yi;
+    sumX2 += xi * xi;
+    sumY2 += yi * yi;
+  }
+  
+  const denominator = n * sumX2 - sumX * sumX;
+  if (Math.abs(denominator) < 1e-10) {
+    return null;
+  }
+  
+  const slope = (n * sumXY - sumX * sumY) / denominator;
+  const intercept = (sumY - slope * sumX) / n;
+  
+  // Compute R²
+  let ssRes = 0, ssTot = 0;
+  const meanY = sumY / n;
+  
+  for (let i = 0; i < n; i++) {
+    const xi = Number(x[i]);
+    const yi = Number(y[i]);
+    if (!Number.isFinite(xi) || !Number.isFinite(yi)) {
+      continue;
+    }
+    const predicted = intercept + slope * xi;
+    const residual = yi - predicted;
+    ssRes += residual * residual;
+    ssTot += (yi - meanY) * (yi - meanY);
+  }
+  
+  const r2 = ssTot > 0 ? 1 - (ssRes / ssTot) : 0;
+  
+  return { slope, intercept, r2 };
+}
+
+function computeKlattFit(xBins, yValues, rangeStart, rangeEnd) {
+  // Extract data points within range, compute log-linear fit
+  if (!xBins || !yValues || xBins.length !== yValues.length) {
+    return null;
+  }
+  
+  const xData = [];
+  const yData = [];
+  
+  for (let i = 0; i < xBins.length; i++) {
+    const range = binToRange(Number(xBins[i]));
+    const val = Number(yValues[i]);
+    
+    // Only include points within the specified range
+    if (range >= rangeStart && range <= rangeEnd && val > 0) {
+      xData.push(range);
+      yData.push(Math.log(val));  // Log-transform for linear fit
+    }
+  }
+  
+  if (xData.length < 2) {
+    return null;
+  }
+  
+  const fit = computeLinearRegression(xData, yData);
+  if (!fit) {
+    return null;
+  }
+  
+  // Klatt method: slope is ln(backscatter), Kd = -slope / 2
+  const kd = -fit.slope / 2;
+  
+  return {
+    slope: fit.slope,
+    intercept: fit.intercept,
+    r2: fit.r2,
+    kd: kd,
+    xData: xData,
+    yData: yData
+  };
+}
+
+function updateAnalysisResults() {
+  // Only compute if Raw tab is active and we have payload
+  if (state.activeWaveformTab !== 'raw' || !state.currentWaveformPayload) {
+    return;
+  }
+  
+  const payload = state.currentWaveformPayload;
+  const byIdentity = {};
+  
+  for (const row of payload.waveforms) {
+    byIdentity[row.identity] = row;
+  }
+  
+  const bins = payload.bins || [];
+  
+  // Get waveforms (with range and ND1 corrections applied)
+  let coNear = byIdentity['co_near']?.waveform || [];
+  let crossNear = byIdentity['cross_near']?.waveform || [];
+  let coFar = byIdentity['co_far']?.waveform || [];
+  let crossFar = byIdentity['cross_far']?.waveform || [];
+  
+  // Apply corrections
+  coNear = applyRangeCorrectionToWaveform(coNear, bins);
+  coNear = applyND1CorrectionToWaveform(coNear, 'co_near');
+  crossNear = applyRangeCorrectionToWaveform(crossNear, bins);
+  crossNear = applyND1CorrectionToWaveform(crossNear, 'cross_near');
+  coFar = applyRangeCorrectionToWaveform(coFar, bins);
+  coFar = applyND1CorrectionToWaveform(coFar, 'co_far');
+  crossFar = applyRangeCorrectionToWaveform(crossFar, bins);
+  crossFar = applyND1CorrectionToWaveform(crossFar, 'cross_far');
+  
+  // Compute fits for NEAR FIELD
+  const coNearFit = computeKlattFit(bins, coNear, state.analysisNearStart, state.analysisNearEnd);
+  const crossNearFit = computeKlattFit(bins, crossNear, state.analysisNearStart, state.analysisNearEnd);
+  
+  // Compute fits for FAR FIELD
+  const coFarFit = computeKlattFit(bins, coFar, state.analysisFarStart, state.analysisFarEnd);
+  const crossFarFit = computeKlattFit(bins, crossFar, state.analysisFarStart, state.analysisFarEnd);
+  
+  // Update UI
+  const fmt = (val) => (Number.isFinite(val) ? val.toFixed(4) : '-');
+  
+  if (coNearFit) {
+    document.getElementById('coNearSlope').textContent = fmt(coNearFit.slope);
+    document.getElementById('coNearIntercept').textContent = fmt(coNearFit.intercept);
+    document.getElementById('coNearR2').textContent = fmt(coNearFit.r2);
+    document.getElementById('coNearKd').textContent = fmt(coNearFit.kd);
+  }
+  
+  if (crossNearFit) {
+    document.getElementById('crossNearSlope').textContent = fmt(crossNearFit.slope);
+    document.getElementById('crossNearIntercept').textContent = fmt(crossNearFit.intercept);
+    document.getElementById('crossNearR2').textContent = fmt(crossNearFit.r2);
+    document.getElementById('crossNearKd').textContent = fmt(crossNearFit.kd);
+  }
+  
+  if (coFarFit) {
+    document.getElementById('coFarSlope').textContent = fmt(coFarFit.slope);
+    document.getElementById('coFarIntercept').textContent = fmt(coFarFit.intercept);
+    document.getElementById('coFarR2').textContent = fmt(coFarFit.r2);
+    document.getElementById('coFarKd').textContent = fmt(coFarFit.kd);
+  }
+  
+  if (crossFarFit) {
+    document.getElementById('crossFarSlope').textContent = fmt(crossFarFit.slope);
+    document.getElementById('crossFarIntercept').textContent = fmt(crossFarFit.intercept);
+    document.getElementById('crossFarR2').textContent = fmt(crossFarFit.r2);
+    document.getElementById('crossFarKd').textContent = fmt(crossFarFit.kd);
+  }
+  
+  // Update waveform chart with range lines and fitted curves
+  updateWaveformChartWithAnalysis(payload, bins, coNearFit, crossNearFit, coFarFit, crossFarFit);
+}
+
+function updateWaveformChartWithAnalysis(payload, bins, coNearFit, crossNearFit, coFarFit, crossFarFit) {
+  const waveformChartEl = document.getElementById('waveformChart');
+  if (!waveformChartEl || !waveformChartEl.data) {
+    return;
+  }
+  
+  // Remove old fitted traces
+  if (state.fittedTraceIndices && state.fittedTraceIndices.length > 0) {
+    try {
+      Plotly.deleteTraces(waveformChartEl, state.fittedTraceIndices);
+    } catch (e) {
+      // Silently fail if traces don't exist
+    }
+    state.fittedTraceIndices = [];
+  }
+  
+  const shapes = [];
+  const newTraces = [];
+  
+  // Add vertical lines for range limits
+  const yStart = state.axisMode === 'range' ? binToRange(0) : 0;
+  const yEnd = state.axisMode === 'range' ? binToRange(state.metadata?.samples_per_pulse - 1 || 1999) : (state.metadata?.samples_per_pulse - 1 || 1999);
+  
+  // NEAR FIELD range lines (dotted)
+  if (Number.isFinite(state.analysisNearStart)) {
+    shapes.push({
+      type: 'line',
+      x0: state.analysisNearStart,
+      x1: state.analysisNearStart,
+      y0: yStart,
+      y1: yEnd,
+      line: { color: 'rgba(255, 215, 0, 0.6)', width: 1.5, dash: 'dot' }
+    });
+  }
+  if (Number.isFinite(state.analysisNearEnd)) {
+    shapes.push({
+      type: 'line',
+      x0: state.analysisNearEnd,
+      x1: state.analysisNearEnd,
+      y0: yStart,
+      y1: yEnd,
+      line: { color: 'rgba(255, 215, 0, 0.6)', width: 1.5, dash: 'dot' }
+    });
+  }
+  
+  // FAR FIELD range lines (dashed)
+  if (Number.isFinite(state.analysisFarStart)) {
+    shapes.push({
+      type: 'line',
+      x0: state.analysisFarStart,
+      x1: state.analysisFarStart,
+      y0: yStart,
+      y1: yEnd,
+      line: { color: 'rgba(98, 210, 162, 0.3)', width: 1, dash: 'dash' }
+    });
+  }
+  if (Number.isFinite(state.analysisFarEnd)) {
+    shapes.push({
+      type: 'line',
+      x0: state.analysisFarEnd,
+      x1: state.analysisFarEnd,
+      y0: yStart,
+      y1: yEnd,
+      line: { color: 'rgba(98, 210, 162, 0.3)', width: 1, dash: 'dash' }
+    });
+  }
+  
+  // Add fitted curve traces
+  if (coNearFit && coNearFit.xData.length > 0) {
+    const yPred = coNearFit.xData.map((x) => {
+      const logY = coNearFit.intercept + coNearFit.slope * x;
+      return Math.exp(logY);
+    });
+    newTraces.push({
+      x: coNearFit.xData,
+      y: yPred,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'CO_NEAR Fit',
+      line: {
+        color: 'rgba(255, 255, 255, 0.6)',
+        width: 2,
+        dash: 'dot'
+      },
+      hovertemplate: 'CO_NEAR Fit<br>Range: %{x:.4f}<br>Value: %{y:.4e}<extra></extra>'
+    });
+  }
+  
+  if (crossNearFit && crossNearFit.xData.length > 0) {
+    const yPred = crossNearFit.xData.map((x) => {
+      const logY = crossNearFit.intercept + crossNearFit.slope * x;
+      return Math.exp(logY);
+    });
+    newTraces.push({
+      x: crossNearFit.xData,
+      y: yPred,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'CROSS_NEAR Fit',
+      line: {
+        color: 'rgba(255, 255, 255, 0.6)',
+        width: 2,
+        dash: 'dot'
+      },
+      hovertemplate: 'CROSS_NEAR Fit<br>Range: %{x:.4f}<br>Value: %{y:.4e}<extra></extra>'
+    });
+  }
+  
+  if (coFarFit && coFarFit.xData.length > 0) {
+    const yPred = coFarFit.xData.map((x) => {
+      const logY = coFarFit.intercept + coFarFit.slope * x;
+      return Math.exp(logY);
+    });
+    newTraces.push({
+      x: coFarFit.xData,
+      y: yPred,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'CO_FAR Fit',
+      line: {
+        color: 'rgba(255, 255, 255, 0.6)',
+        width: 2,
+        dash: 'dash'
+      },
+      hovertemplate: 'CO_FAR Fit<br>Range: %{x:.4f}<br>Value: %{y:.4e}<extra></extra>'
+    });
+  }
+  
+  if (crossFarFit && crossFarFit.xData.length > 0) {
+    const yPred = crossFarFit.xData.map((x) => {
+      const logY = crossFarFit.intercept + crossFarFit.slope * x;
+      return Math.exp(logY);
+    });
+    newTraces.push({
+      x: crossFarFit.xData,
+      y: yPred,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'CROSS_FAR Fit',
+      line: {
+        color: 'rgba(255, 255, 255, 0.6)',
+        width: 2,
+        dash: 'dash'
+      },
+      hovertemplate: 'CROSS_FAR Fit<br>Range: %{x:.4f}<br>Value: %{y:.4e}<extra></extra>'
+    });
+  }
+  
+  // Add new traces if any
+  if (newTraces.length > 0) {
+    const currentTraceCount = waveformChartEl.data.length;
+    Plotly.addTraces(waveformChartEl, newTraces);
+    // Track indices of newly added traces
+    for (let i = currentTraceCount; i < currentTraceCount + newTraces.length; i++) {
+      state.fittedTraceIndices.push(i);
+    }
+  }
+  
+  // Update shapes
+  Plotly.relayout(waveformChartEl, { shapes: shapes });
+}
+
+async function boot() {
+  const [metaRes, heatRes] = await Promise.all([
+    fetch('/api/metadata'),
+    fetch(`/api/heatmaps?sigma_v=${state.filterSigmaV}&sigma_h=${state.filterSigmaH}`),
+  ]);
+
+  state.metadata = await metaRes.json();
+  const heatPayload = await heatRes.json();
+  
+  console.log('boot() received heatPayload with keys:', Object.keys(heatPayload));
+  console.log('Has series_filtered:', 'series_filtered' in heatPayload);
+  
+  // Split into raw and filtered heatmaps
+  state.heatmaps = {
+    samples_per_pulse: heatPayload.samples_per_pulse,
+    identities: heatPayload.identities,
+    series: heatPayload.series,
+  };
+  state.heatmapsFiltered = {
+    samples_per_pulse: heatPayload.samples_per_pulse,
+    identities: heatPayload.identities,
+    series: heatPayload.series_filtered,
+  };
+  
+  console.log('After boot(), state.heatmaps.identities:', state.heatmaps.identities);
+  console.log('After boot(), state.heatmapsFiltered.identities:', state.heatmapsFiltered.identities);
+
+  // Set maxXAxis to samples_per_pulse from metadata
+  if (state.metadata && state.metadata.samples_per_pulse) {
+    state.maxXAxis = state.metadata.samples_per_pulse - 1;
+    updateMaxXAxisUI();
+  }
+
+  updateMetaBox(state.metadata);
+
+  // Update analysis sliders with MAX_RANGE
+  const maxRangeValue = Math.round(MAX_RANGE * 1000) / 1000;  // Round to 3 decimals
+  const nearRangeSlider = document.getElementById('nearRangeSlider');
+  const farRangeSlider = document.getElementById('farRangeSlider');
+  
+  if (nearRangeSlider.noUiSlider) {
+    nearRangeSlider.noUiSlider.updateOptions({
+      range: {
+        'min': 0,
+        'max': maxRangeValue
+      }
+    });
+    nearRangeSlider.noUiSlider.set([0, maxRangeValue]);
+  }
+  
+  if (farRangeSlider.noUiSlider) {
+    farRangeSlider.noUiSlider.updateOptions({
+      range: {
+        'min': 0,
+        'max': maxRangeValue
+      }
+    });
+    farRangeSlider.noUiSlider.set([0, maxRangeValue]);
+  }
+  
+  state.analysisNearEnd = maxRangeValue;
+  state.analysisFarEnd = maxRangeValue;
+
+  renderHeatmaps();
+
+  const firstIdentity = state.heatmaps.identities[0];
+  const firstSeries = state.heatmaps.series[firstIdentity];
+  if (firstSeries && firstSeries.timestamps.length > 0) {
+    const initialTs = firstSeries.timestamps[Math.floor(firstSeries.timestamps.length / 2)];
+    selectTimestamp(initialTs, firstIdentity);
+  } else {
+    document.getElementById('selectionInfo').textContent = 'No waveform rows found in selected input.';
+  }
+}
+
+function wirePickers() {
+  const pickFilesBtn = document.getElementById('pickFilesBtn');
+  const pickDirBtn = document.getElementById('pickDirBtn');
+  const fileInput = document.getElementById('fileInput');
+  const dirInput = document.getElementById('dirInput');
+  const pathInput = document.getElementById('pathInput');
+
+  pickFilesBtn.addEventListener('click', () => fileInput.click());
+  pickDirBtn.addEventListener('click', () => dirInput.click());
+
+  fileInput.addEventListener('change', async () => {
+    const files = Array.from(fileInput.files || []);
+    if (!files.length) return;
+
+    const selectedPaths = files.map((f) => bestPathForFile(f));
+    pathInput.value = selectedPaths.join('; ');
+
+    try {
+      await loadFiles(files);
+      await reloadDataset();
+    } catch (err) {
+      document.getElementById('selectionInfo').textContent = `Load failed: ${err}`;
+    } finally {
+      fileInput.value = '';
+    }
+  });
+
+  dirInput.addEventListener('change', async () => {
+    const files = Array.from(dirInput.files || []).filter((f) => f.name.toLowerCase().endsWith('.csv'));
+    if (!files.length) {
+      document.getElementById('selectionInfo').textContent = 'Selected directory has no .csv files.';
+      return;
+    }
+
+    pathInput.value = directoryPathFromFile(files[0]);
+
+    try {
+      await loadFiles(files);
+      await reloadDataset();
+    } catch (err) {
+      document.getElementById('selectionInfo').textContent = `Load failed: ${err}`;
+    } finally {
+      dirInput.value = '';
+    }
+  });
+
+  pathInput.addEventListener('keydown', async (ev) => {
+    if (ev.key !== 'Enter') return;
+    const value = pathInput.value.trim();
+    if (!value) return;
+    try {
+      await loadPath(value);
+      await reloadDataset();
+    } catch (err) {
+      document.getElementById('selectionInfo').textContent = `Load failed: ${err}`;
+    }
+  });
+}
+
+async function reloadHeatmapsWithFilterParams() {
+  /**
+   * Reload heatmaps with current filter sigma parameters.
+   * Called when user presses Enter in filter sigma input boxes.
+   */
+  console.log(`Reloading heatmaps with σ_V=${state.filterSigmaV}, σ_H=${state.filterSigmaH}`);
+  try {
+    const url = `/api/heatmaps?sigma_v=${state.filterSigmaV}&sigma_h=${state.filterSigmaH}`;
+    console.log(`Fetching: ${url}`);
+    const response = await fetch(url);
+    const heatPayload = await response.json();
+    console.log('Heatmap response received:', { 
+      identities: heatPayload.identities, 
+      series_length: heatPayload.series?.length,
+      series_filtered_length: heatPayload.series_filtered?.length
+    });
+    
+    // Update both raw and filtered datasets
+    state.heatmaps = {
+      samples_per_pulse: heatPayload.samples_per_pulse,
+      identities: heatPayload.identities,
+      series: heatPayload.series,
+    };
+    state.heatmapsFiltered = {
+      samples_per_pulse: heatPayload.samples_per_pulse,
+      identities: heatPayload.identities,
+      series: heatPayload.series_filtered,
+    };
+    
+    console.log(`Heatmaps reloaded. Current view mode: ${state.heatmapViewMode}`);
+    // Re-render heatmaps
+    renderHeatmaps();
+    
+    // If a timestamp is currently selected, reload waveforms with new filter parameters
+    if (state.activeTimestamp) {
+      console.log(`Reloading waveforms for timestamp ${state.activeTimestamp} with new filter parameters`);
+      const wfUrl = `/api/waveforms?timestamp=${state.activeTimestamp}&sigma_v=${state.filterSigmaV}&sigma_h=${state.filterSigmaH}`;
+      const wfResponse = await fetch(wfUrl);
+      const wfPayload = await wfResponse.json();
+      state.currentWaveformPayload = wfPayload;
+      console.log('Waveforms reloaded with new filter parameters');
+      // Re-render current waveform tab (filtered and residuals will update)
+      renderCurrentWaveformTab();
+    }
+  } catch (err) {
+    console.error('Failed to reload heatmaps with new filter parameters:', err);
+  }
+}
+
+function wireWaveTabs() {
+  const tabRaw = document.getElementById('tabRaw');
+  const tabFiltered = document.getElementById('tabFiltered');
+  const tabResiduals = document.getElementById('tabResiduals');
+  const tabDepol = document.getElementById('tabDepol');
+  const tabPower = document.getElementById('tabPower');
+  const tabLaserTemp = document.getElementById('tabLaserTemp');
+  const tabAttitude = document.getElementById('tabAttitude');
+  const logAxisToggle = document.getElementById('logAxisToggle');
+
+  tabRaw.addEventListener('click', () => setWaveformTab('raw'));
+  tabFiltered.addEventListener('click', () => setWaveformTab('filtered'));
+  tabResiduals.addEventListener('click', () => setWaveformTab('residuals'));
+  tabDepol.addEventListener('click', () => setWaveformTab('depol'));
+  tabPower.addEventListener('click', () => setWaveformTab('power'));
+  tabLaserTemp.addEventListener('click', () => setWaveformTab('laserTemp'));
+  tabAttitude.addEventListener('click', () => setWaveformTab('attitude'));
+  
+  logAxisToggle.addEventListener('change', () => {
+    state.logAxisEnabled = logAxisToggle.checked;
+    if (state.activeWaveformTab === 'raw' || state.activeWaveformTab === 'filtered' || state.activeWaveformTab === 'residuals') {
+      renderCurrentWaveformTab();
+      if (state.activeWaveformTab === 'raw') {
+        updateAnalysisResults();
+      }
+    }
+  });
+
+  // Initialize Raw tab as active on page load
+  setWaveformTab('raw');
+}
+
+function wireAnalysisControls() {
+  const nearRangeSlider = document.getElementById('nearRangeSlider');
+  const farRangeSlider = document.getElementById('farRangeSlider');
+  const nearStartValue = document.getElementById('nearStartValue');
+  const nearEndValue = document.getElementById('nearEndValue');
+  const farStartValue = document.getElementById('farStartValue');
+  const farEndValue = document.getElementById('farEndValue');
+  
+  // Initialize NEAR FIELD dual-range slider
+  noUiSlider.create(nearRangeSlider, {
+    start: [0, 0.24],
+    connect: true,
+    range: {
+      'min': 0,
+      'max': 0.24
+    },
+    step: 0.001,
+    format: {
+      to: (value) => Number(value).toFixed(3),
+      from: (value) => Number(value)
+    }
+  });
+  
+  nearRangeSlider.noUiSlider.on('update', (values) => {
+    state.analysisNearStart = Number(values[0]);
+    state.analysisNearEnd = Number(values[1]);
+    nearStartValue.textContent = Number(values[0]).toFixed(3);
+    nearEndValue.textContent = Number(values[1]).toFixed(3);
+    if (state.activeWaveformTab === 'raw') {
+      updateAnalysisResults();
+    }
+  });
+  
+  // Initialize FAR FIELD dual-range slider
+  noUiSlider.create(farRangeSlider, {
+    start: [0, 0.24],
+    connect: true,
+    range: {
+      'min': 0,
+      'max': 0.24
+    },
+    step: 0.001,
+    format: {
+      to: (value) => Number(value).toFixed(3),
+      from: (value) => Number(value)
+    }
+  });
+  
+  farRangeSlider.noUiSlider.on('update', (values) => {
+    state.analysisFarStart = Number(values[0]);
+    state.analysisFarEnd = Number(values[1]);
+    farStartValue.textContent = Number(values[0]).toFixed(3);
+    farEndValue.textContent = Number(values[1]).toFixed(3);
+    if (state.activeWaveformTab === 'raw') {
+      updateAnalysisResults();
+    }
+  });
+}
+
+
+function updateHeatmapSlider() {
+  if (!state.heatmaps || !state.heatmapTimeWindowStart) return;
+
+  const allTimestamps = [];
+  state.heatmaps.identities.forEach((identity) => {
+    const series = state.heatmaps.series[identity];
+    allTimestamps.push(...series.timestamps);
+  });
+
+  if (allTimestamps.length === 0) return;
+
+  const minTime = Math.min(...allTimestamps);
+  const maxTime = Math.max(...allTimestamps);
+  const maxStart = Math.max(minTime, maxTime - HEATMAP_WINDOW_DURATION);
+  const slider = document.getElementById('heatmapTimeSlider');
+  const label = document.getElementById('heatmapTimeLabel');
+
+  if (!slider) return;
+
+  // Calculate normalized slider position (0-100)
+  const range = maxStart - minTime;
+  const position = range > 0 ? ((state.heatmapTimeWindowStart - minTime) / range) * 100 : 0;
+  slider.value = Math.min(100, Math.max(0, position));
+
+  // Update label
+  const windowEnd = state.heatmapTimeWindowStart + HEATMAP_WINDOW_DURATION;
+  if (state.pulseTimeMode === 'mmss') {
+    label.textContent = `${fmtMinuteSecond(state.heatmapTimeWindowStart)} - ${fmtMinuteSecond(windowEnd)}`;
+  } else {
+    label.textContent = `${Math.floor(state.heatmapTimeWindowStart)} - ${Math.floor(windowEnd)} ms`;
+  }
+}
+
+function wireHeatmapSlider() {
+  const slider = document.getElementById('heatmapTimeSlider');
+  if (!slider) return;
+
+  slider.addEventListener('input', () => {
+    if (!state.heatmaps) return;
+
+    const allTimestamps = [];
+    state.heatmaps.identities.forEach((identity) => {
+      const series = state.heatmaps.series[identity];
+      allTimestamps.push(...series.timestamps);
+    });
+
+    if (allTimestamps.length === 0) return;
+
+    const minTime = Math.min(...allTimestamps);
+    const maxTime = Math.max(...allTimestamps);
+    const maxStart = Math.max(minTime, maxTime - HEATMAP_WINDOW_DURATION);
+    const range = maxStart - minTime;
+    const sliderPosition = (slider.value / 100) * range;
+    state.heatmapTimeWindowStart = minTime + sliderPosition;
+
+    // Re-render all heatmaps with new window
+    renderHeatmaps();
+  });
+}
+
+// Get the effective max bin value capped by file's samples_per_pulse
+function getMaxBinLimit() {
+  if (state.metadata && state.metadata.samples_per_pulse) {
+    return Math.min(state.metadata.samples_per_pulse - 1, MAX_BIN);
+  }
+  return MAX_BIN;
+}
+
+function updateMaxXAxisUI() {
+  const maxXAxisInput = document.getElementById('maxXAxisInput');
+  const maxXAxisLabel = document.getElementById('maxXAxisLabel');
+  
+  // Cap state.maxXAxis at the effective limit
+  const maxBinLimit = getMaxBinLimit();
+  if (state.maxXAxis > maxBinLimit) {
+    state.maxXAxis = maxBinLimit;
+  }
+  
+  const isRange = state.axisMode === 'range';
+  maxXAxisInput.step = isRange ? '0.01' : '1';
+  maxXAxisLabel.textContent = isRange ? 'Max (m)' : 'Max #';
+  
+  if (isRange) {
+    // Convert state.maxXAxis (in bins) to range for display
+    const rangeValue = binToRange(state.maxXAxis);
+    const maxRangeLimit = binToRange(maxBinLimit);
+    maxXAxisInput.max = maxRangeLimit.toFixed(2);
+    maxXAxisInput.value = rangeValue.toFixed(2);
+  } else {
+    // state.maxXAxis is already in bins
+    maxXAxisInput.max = maxBinLimit.toString();
+    maxXAxisInput.value = state.maxXAxis;
+  }
+}
+
+function wireDisplayControls() {
+  const axisBin = document.getElementById('axisBin');
+  const axisRange = document.getElementById('axisRange');
+  const timeEpoch = document.getElementById('timeEpoch');
+  const timeMmss = document.getElementById('timeMmss');
+  const rangeCorrection = document.getElementById('rangeCorrection');
+  const rangeRefInput = document.getElementById('rangeRefInput');
+  const maxXAxisInput = document.getElementById('maxXAxisInput');
+  const maxXAxisLabel = document.getElementById('maxXAxisLabel');
+
+  const updateMode = () => {
+    // Before changing mode, convert current input value from old mode to bins
+    const oldMode = state.axisMode;
+    const currentInputValue = Number(maxXAxisInput.value);
+    
+    // Convert current display value to bins based on old mode
+    let binValue;
+    if (oldMode === 'range') {
+      // Current value is in range (meters), convert to bins
+      binValue = Math.round((currentInputValue * 2 * FS_HZ) / C_SW);
+    } else {
+      // Current value is in bins
+      binValue = currentInputValue;
+    }
+    // Cap at file's samples_per_pulse
+    const maxBinLimit = getMaxBinLimit();
+    state.maxXAxis = Math.min(binValue, maxBinLimit);
+    
+    state.pulseTimeMode = timeMmss.checked ? 'mmss' : 'epoch';
+    state.rangeRef = sanitizeRangeRef(rangeRefInput.value);
+    state.rangeCorrectionEnabled = rangeCorrection.checked;
+
+    if (state.rangeCorrectionEnabled) {
+      axisRange.checked = true;
+      axisBin.checked = false;
+      axisBin.disabled = true;
+      state.axisMode = 'range';
+    } else {
+      axisBin.disabled = false;
+      state.axisMode = axisRange.checked ? 'range' : 'bin';
+    }
+
+    updateMaxXAxisUI();
+
+    if (state.heatmaps) {
+      renderHeatmaps();
+    }
+    renderCurrentWaveformTab();
+  };
+
+  axisBin.addEventListener('change', updateMode);
+  axisRange.addEventListener('change', updateMode);
+  timeEpoch.addEventListener('change', updateMode);
+  timeMmss.addEventListener('change', updateMode);
+  rangeCorrection.addEventListener('change', () => {
+    // Auto-set R_ref to 7.25 when Range Correction is enabled
+    if (rangeCorrection.checked) {
+      rangeRefInput.value = '7.25';
+    }
+    updateMode();
+  });
+  rangeRefInput.addEventListener('change', updateMode);
+  
+  const nd1Correction = document.getElementById('nd1Correction');
+  nd1Correction.addEventListener('change', () => {
+    state.nd1CorrEnabled = nd1Correction.checked;
+    if (state.heatmaps) {
+      renderHeatmaps();
+    }
+    renderCurrentWaveformTab();
+  });
+  
+  // Wire filter controls
+  const filterSigmaVInput = document.getElementById('filterSigmaVInput');
+  const filterSigmaHInput = document.getElementById('filterSigmaHInput');
+  const heatmapViewModeRaw = document.getElementById('heatmapViewModeRaw');
+  const heatmapViewModeFiltered = document.getElementById('heatmapViewModeFiltered');
+  
+  filterSigmaVInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const newValue = Number(filterSigmaVInput.value);
+      console.log(`σ_V updated from ${state.filterSigmaV} to ${newValue}`);
+      state.filterSigmaV = newValue;
+      reloadHeatmapsWithFilterParams();
+    }
+  });
+  
+  filterSigmaHInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const newValue = Number(filterSigmaHInput.value);
+      console.log(`σ_H updated from ${state.filterSigmaH} to ${newValue}`);
+      state.filterSigmaH = newValue;
+      reloadHeatmapsWithFilterParams();
+    }
+  });
+  
+  heatmapViewModeRaw.addEventListener('change', () => {
+    console.log('Raw heatmap mode selected');
+    state.heatmapViewMode = 'raw';
+    if (state.heatmaps) {
+      renderHeatmaps();
+    }
+  });
+  
+  heatmapViewModeFiltered.addEventListener('change', () => {
+    console.log('Filtered heatmap mode selected, state.heatmapsFiltered exists:', !!state.heatmapsFiltered);
+    state.heatmapViewMode = 'filtered';
+    if (state.heatmapsFiltered) {
+      console.log('Rendering filtered heatmaps with first identity:', state.heatmapsFiltered.identities[0]);
+      renderHeatmaps();
+    } else {
+      console.log('ERROR: state.heatmapsFiltered is not set!');
+    }
+  });
+  
+  maxXAxisInput.addEventListener('change', () => {
+    const inputValue = Number(maxXAxisInput.value);
+    // Convert from current display mode to bins
+    let binValue = state.axisMode === 'range' 
+      ? Math.round((inputValue * 2 * FS_HZ) / C_SW)
+      : inputValue;
+    // Cap at file's samples_per_pulse
+    const maxBinLimit = getMaxBinLimit();
+    state.maxXAxis = Math.min(binValue, maxBinLimit);
+    if (state.heatmaps) {
+      renderHeatmaps();
+    }
+    renderCurrentWaveformTab();
+  });
+  maxXAxisInput.addEventListener('input', () => {
+    const inputValue = Number(maxXAxisInput.value);
+    // Convert from current display mode to bins
+    let binValue = state.axisMode === 'range' 
+      ? Math.round((inputValue * 2 * FS_HZ) / C_SW)
+      : inputValue;
+    // Cap at file's samples_per_pulse
+    const maxBinLimit = getMaxBinLimit();
+    state.maxXAxis = Math.min(binValue, maxBinLimit);
+    if (state.heatmaps) {
+      renderHeatmaps();
+    }
+    renderCurrentWaveformTab();
+  });
+
+  updateMaxXAxisUI();
+}
+
+wirePickers();
+wireWaveTabs();
+wireDisplayControls();
+wireHeatmapSlider();
+wireAnalysisControls();
+
+boot().catch((err) => {
+  const info = document.getElementById('selectionInfo');
+  info.textContent = `Failed to initialize dashboard: ${err}`;
+});
+</script>
+</body>
+</html>

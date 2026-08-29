@@ -124,6 +124,7 @@ class PalsData:
         self.rows: list[dict[str, Any]] = []
         self._by_identity: dict[str, list[dict[str, Any]]] = {}
         self._timestamps_by_identity: dict[str, list[int]] = {}
+        self.power_format: str = "unknown"  # "old" or "new"
         self._load()
 
     @classmethod
@@ -141,6 +142,7 @@ class PalsData:
         instance.rows = []
         instance._by_identity = {}
         instance._timestamps_by_identity = {}
+        instance.power_format = "unknown"
 
         for uploaded in uploaded_files:
             name = (getattr(uploaded, "filename", None) or "uploaded.csv").strip() or "uploaded.csv"
@@ -185,6 +187,25 @@ class PalsData:
         if not waveform_columns:
             raise ValueError(f"No waveform columns found in {source_name}")
 
+        # Detect power format based on header columns
+        has_old_format = all(col in header for col in ["PowerAMin", "PowerAMax", "PowerBMin", "PowerBMax"])
+        has_new_format = all(col in header for col in ["PowerASum", "PowerBSum"])
+        
+        if has_old_format:
+            detected_format = "old"
+        elif has_new_format:
+            detected_format = "new"
+        else:
+            detected_format = "unknown"
+        
+        # Ensure all files use the same format
+        if self.power_format == "unknown":
+            self.power_format = detected_format
+        elif self.power_format != detected_format:
+            raise ValueError(
+                f"Power format mismatch: expected {self.power_format}, got {detected_format} in {source_name}"
+            )
+
         if not self.header:
             self.header = header
             self.waveform_columns = waveform_columns
@@ -206,20 +227,35 @@ class PalsData:
             if not waveform:
                 continue
 
-            row = {
-                "timestamp": timestamp_ms,
-                "identity": identity,
-                "roll": roll,
-                "pitch": pitch,
-                "yaw": yaw,
-                "tilt_deg": _tilt_from_roll_pitch(roll, pitch),
-                "laser_temp_c": _safe_float(record.get("LaserTempC")),
-                "power_a_min": _safe_float(record.get("PowerAMin")),
-                "power_a_max": _safe_float(record.get("PowerAMax")),
-                "power_b_min": _safe_float(record.get("PowerBMin")),
-                "power_b_max": _safe_float(record.get("PowerBMax")),
-                "waveform": waveform,
-            }
+            # Parse power data based on detected format
+            if detected_format == "old":
+                row = {
+                    "timestamp": timestamp_ms,
+                    "identity": identity,
+                    "roll": roll,
+                    "pitch": pitch,
+                    "yaw": yaw,
+                    "tilt_deg": _tilt_from_roll_pitch(roll, pitch),
+                    "laser_temp_c": _safe_float(record.get("LaserTempC")),
+                    "power_a_min": _safe_float(record.get("PowerAMin")),
+                    "power_a_max": _safe_float(record.get("PowerAMax")),
+                    "power_b_min": _safe_float(record.get("PowerBMin")),
+                    "power_b_max": _safe_float(record.get("PowerBMax")),
+                    "waveform": waveform,
+                }
+            else:  # new format or unknown
+                row = {
+                    "timestamp": timestamp_ms,
+                    "identity": identity,
+                    "roll": roll,
+                    "pitch": pitch,
+                    "yaw": yaw,
+                    "tilt_deg": _tilt_from_roll_pitch(roll, pitch),
+                    "laser_temp_c": _safe_float(record.get("LaserTempC")),
+                    "power_a_sum": _safe_float(record.get("PowerASum")),
+                    "power_b_sum": _safe_float(record.get("PowerBSum")),
+                    "waveform": waveform,
+                }
 
             self.rows.append(row)
             self._by_identity.setdefault(identity, []).append(row)
@@ -446,10 +482,13 @@ class PalsData:
                 "identity": None,
                 "identities": [],
                 "timestamps": [],
+                "power_format": "unknown",
                 "power_a_min": [],
                 "power_a_max": [],
                 "power_b_min": [],
                 "power_b_max": [],
+                "power_a_sum": [],
+                "power_b_sum": [],
                 "ratio_ba_min": [],
                 "ratio_ba_max": [],
             }
@@ -468,31 +507,60 @@ class PalsData:
                 return None
 
         timestamps = [int(row["timestamp"]) for row in all_rows]
-        power_a_min = [safe_float(row.get("power_a_min")) for row in all_rows]
-        power_a_max = [safe_float(row.get("power_a_max")) for row in all_rows]
-        power_b_min = [safe_float(row.get("power_b_min")) for row in all_rows]
-        power_b_max = [safe_float(row.get("power_b_max")) for row in all_rows]
 
-        ratio_ba_min = [
-            _safe_ratio(b_min, a_min)
-            for a_min, b_min in zip(power_a_min, power_b_min)
-        ]
-        ratio_ba_max = [
-            _safe_ratio(b_max, a_max)
-            for a_max, b_max in zip(power_a_max, power_b_max)
-        ]
+        # Handle both old and new power formats
+        if self.power_format == "old":
+            power_a_min = [safe_float(row.get("power_a_min")) for row in all_rows]
+            power_a_max = [safe_float(row.get("power_a_max")) for row in all_rows]
+            power_b_min = [safe_float(row.get("power_b_min")) for row in all_rows]
+            power_b_max = [safe_float(row.get("power_b_max")) for row in all_rows]
 
-        return {
-            "identity": "All",
-            "identities": self.identities,
-            "timestamps": timestamps,
-            "power_a_min": power_a_min,
-            "power_a_max": power_a_max,
-            "power_b_min": power_b_min,
-            "power_b_max": power_b_max,
-            "ratio_ba_min": ratio_ba_min,
-            "ratio_ba_max": ratio_ba_max,
-        }
+            ratio_ba_min = [
+                _safe_ratio(b_min, a_min)
+                for a_min, b_min in zip(power_a_min, power_b_min)
+            ]
+            ratio_ba_max = [
+                _safe_ratio(b_max, a_max)
+                for a_max, b_max in zip(power_a_max, power_b_max)
+            ]
+
+            return {
+                "identity": "All",
+                "identities": self.identities,
+                "timestamps": timestamps,
+                "power_format": "old",
+                "power_a_min": power_a_min,
+                "power_a_max": power_a_max,
+                "power_b_min": power_b_min,
+                "power_b_max": power_b_max,
+                "power_a_sum": [],
+                "power_b_sum": [],
+                "ratio_ba_min": ratio_ba_min,
+                "ratio_ba_max": ratio_ba_max,
+            }
+        else:  # new format
+            power_a_sum = [safe_float(row.get("power_a_sum")) for row in all_rows]
+            power_b_sum = [safe_float(row.get("power_b_sum")) for row in all_rows]
+
+            ratio_ba_sum = [
+                _safe_ratio(b_sum, a_sum)
+                for a_sum, b_sum in zip(power_a_sum, power_b_sum)
+            ]
+
+            return {
+                "identity": "All",
+                "identities": self.identities,
+                "timestamps": timestamps,
+                "power_format": "new",
+                "power_a_min": [],
+                "power_a_max": [],
+                "power_b_min": [],
+                "power_b_max": [],
+                "power_a_sum": power_a_sum,
+                "power_b_sum": power_b_sum,
+                "ratio_ba_min": ratio_ba_sum,
+                "ratio_ba_max": [],
+            }
 
     def get_laser_temp_payload(self, identity: str | None = None) -> dict[str, Any]:
         if not self.identities:

@@ -645,87 +645,143 @@ function ensurePowerPayload() {
 function renderPowerSeries(payload) {
   updateAnchorInfo(state.currentWaveformPayload);
   let x = payload.timestamps || [];
-  let aMin = payload.power_a_min || [];
-  let aMax = payload.power_a_max || [];
-  let bMin = payload.power_b_min || [];
-  let bMax = payload.power_b_max || [];
-  let ratioMin = payload.ratio_ba_min || [];
-  let ratioMax = payload.ratio_ba_max || [];
+  let powerFormat = payload.power_format || "old";
+  
+  let traces = [];
+  
+  if (powerFormat === "old") {
+    // Old format: 4 power values (Min/Max for A and B)
+    let aMin = payload.power_a_min || [];
+    let aMax = payload.power_a_max || [];
+    let bMin = payload.power_b_min || [];
+    let bMax = payload.power_b_max || [];
+    let ratioMin = payload.ratio_ba_min || [];
+    let ratioMax = payload.ratio_ba_max || [];
 
-  // Sort all arrays by timestamp to avoid diagonal line connections
-  if (x.length > 0) {
-    const indices = Array.from({ length: x.length }, (_, i) => i);
-    indices.sort((i, j) => Number(x[i]) - Number(x[j]));
-    
-    x = indices.map(i => x[i]);
-    aMin = indices.map(i => aMin[i]);
-    aMax = indices.map(i => aMax[i]);
-    bMin = indices.map(i => bMin[i]);
-    bMax = indices.map(i => bMax[i]);
-    ratioMin = indices.map(i => ratioMin[i]);
-    ratioMax = indices.map(i => ratioMax[i]);
+    // Sort all arrays by timestamp to avoid diagonal line connections
+    if (x.length > 0) {
+      const indices = Array.from({ length: x.length }, (_, i) => i);
+      indices.sort((i, j) => Number(x[i]) - Number(x[j]));
+      
+      x = indices.map(i => x[i]);
+      aMin = indices.map(i => aMin[i]);
+      aMax = indices.map(i => aMax[i]);
+      bMin = indices.map(i => bMin[i]);
+      bMax = indices.map(i => bMax[i]);
+      ratioMin = indices.map(i => ratioMin[i]);
+      ratioMax = indices.map(i => ratioMax[i]);
+    }
+
+    traces = [
+      {
+        x,
+        y: aMin.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Power A Min',
+        line: { width: 2, color: '#7ed6ff', shape: 'linear' },
+        hovertemplate: 'Power A Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+      {
+        x,
+        y: aMax.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Power A Max',
+        line: { width: 2, color: '#0ea5e9', shape: 'linear' },
+        hovertemplate: 'Power A Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+      {
+        x,
+        y: bMin.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Power B Min',
+        line: { width: 2, color: '#fbbf24', shape: 'linear' },
+        hovertemplate: 'Power B Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+      {
+        x,
+        y: bMax.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Power B Max',
+        line: { width: 2, color: '#f97316', shape: 'linear' },
+        hovertemplate: 'Power B Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+      {
+        x,
+        y: ratioMin.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Ratio B/A Min',
+        line: { width: 2, color: '#a78bfa', shape: 'linear' },
+        yaxis: 'y2',
+        hovertemplate: 'Ratio B/A Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+      {
+        x,
+        y: ratioMax.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Ratio B/A Max',
+        line: { width: 2, color: '#d946ef', shape: 'linear' },
+        yaxis: 'y2',
+        hovertemplate: 'Ratio B/A Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+    ];
+  } else {
+    // New format: 2 power values (Sum for A and B)
+    let aSum = payload.power_a_sum || [];
+    let bSum = payload.power_b_sum || [];
+    let ratioSum = payload.ratio_ba_min || [];  // ratio is stored in ratio_ba_min for new format
+
+    // Sort all arrays by timestamp to avoid diagonal line connections
+    if (x.length > 0) {
+      const indices = Array.from({ length: x.length }, (_, i) => i);
+      indices.sort((i, j) => Number(x[i]) - Number(x[j]));
+      
+      x = indices.map(i => x[i]);
+      aSum = indices.map(i => aSum[i]);
+      bSum = indices.map(i => bSum[i]);
+      ratioSum = indices.map(i => ratioSum[i]);
+    }
+
+    traces = [
+      {
+        x,
+        y: aSum.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Power A Sum',
+        line: { width: 2, color: '#0ea5e9', shape: 'linear' },
+        hovertemplate: 'Power A Sum<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+      {
+        x,
+        y: bSum.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Power B Sum',
+        line: { width: 2, color: '#f97316', shape: 'linear' },
+        hovertemplate: 'Power B Sum<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+      {
+        x,
+        y: ratioSum.map(v => v === null || v === undefined ? NaN : Number(v)),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Ratio B/A',
+        line: { width: 2, color: '#a78bfa', shape: 'linear' },
+        yaxis: 'y2',
+        hovertemplate: 'Ratio B/A<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
+      },
+    ];
   }
-
-  const traces = [
-    {
-      x,
-      y: aMin.map(v => v === null || v === undefined ? NaN : Number(v)),
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Power A Min',
-      line: { width: 2, color: '#7ed6ff', shape: 'linear' },
-      hovertemplate: 'Power A Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
-    },
-    {
-      x,
-      y: aMax.map(v => v === null || v === undefined ? NaN : Number(v)),
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Power A Max',
-      line: { width: 2, color: '#0ea5e9', shape: 'linear' },
-      hovertemplate: 'Power A Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
-    },
-    {
-      x,
-      y: bMin.map(v => v === null || v === undefined ? NaN : Number(v)),
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Power B Min',
-      line: { width: 2, color: '#fbbf24', shape: 'linear' },
-      hovertemplate: 'Power B Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
-    },
-    {
-      x,
-      y: bMax.map(v => v === null || v === undefined ? NaN : Number(v)),
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Power B Max',
-      line: { width: 2, color: '#f97316', shape: 'linear' },
-      hovertemplate: 'Power B Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
-    },
-    {
-      x,
-      y: ratioMin.map(v => v === null || v === undefined ? NaN : Number(v)),
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Ratio B/A Min',
-      line: { width: 2, color: '#a78bfa', shape: 'linear' },
-      hovertemplate: 'Ratio B/A Min<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
-    },
-    {
-      x,
-      y: ratioMax.map(v => v === null || v === undefined ? NaN : Number(v)),
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Ratio B/A Max',
-      line: { width: 2, color: '#d946ef', shape: 'linear' },
-      hovertemplate: 'Ratio B/A Max<br>Time: %{x}<br>Value: %{y:.4f}<extra></extra>',
-    },
-  ];
 
   const layout = {
     height: 660,
-    margin: { l: 64, r: 28, t: 24, b: 62 },
+    margin: { l: 64, r: 64, t: 24, b: 62 },
     paper_bgcolor: '#0f1622',
     plot_bgcolor: '#0f1622',
     xaxis: {
@@ -739,6 +795,14 @@ function renderPowerSeries(payload) {
       title: 'Power',
       color: '#d7dee5',
       gridcolor: '#253347',
+    },
+    yaxis2: {
+      title: 'Ratio B/A',
+      titlefont: { color: '#a78bfa' },
+      tickfont: { color: '#a78bfa' },
+      overlaying: 'y',
+      side: 'right',
+      range: [0.5, 0.7],
     },
     legend: {
       orientation: 'h',

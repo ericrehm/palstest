@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PALS V2 Processing</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .tab-nav { display: flex; gap: 8px; margin-top: 10px; }
+    .tab-nav a {
+      padding: 8px 16px; border-radius: 6px; text-decoration: none;
+      color: #ccc; background: #2a2a2a; border: 1px solid #444; font-weight: 500;
+    }
+    .tab-nav a:hover { background: #333; color: #fff; }
+    .tab-nav a.active { background: #3a6ea5; color: #fff; border-color: #3a6ea5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>PALS V2 Processing Pipeline</h1>
+      <div class="instrument-id">Instrument: {{ instrument }}</div>
+      <nav class="tab-nav">
+        <a href="/" class="{{ 'active' if active_tab == 'processing' else '' }}">Processing</a>
+        <a href="/viewer" class="{{ 'active' if active_tab == 'viewer1' else '' }}">Browse</a>
+        <a href="/compare" class="{{ 'active' if active_tab == 'viewer2' else '' }}">Compare</a>
+      </nav>
+    </header>
+
+    <div class="section">
+      <h2>Process PALS Data</h2>
+      <form id="processForm">
+        <div class="form-group">
+          <label>Select Directory (pipeline outputs are written alongside the raw files in this directory)</label>
+          <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+            <button type="button" id="pickDirBtn" class="picker-btn">Pick Directory</button>
+            <button type="button" id="selectAllBtn" style="flex: 0 0 auto;" disabled>Select All</button>
+            <button type="button" id="selectNoneBtn" style="flex: 0 0 auto;" disabled>Select None</button>
+          </div>
+
+          <div id="selectionInfo" style="background: #1a1a1a; padding: 10px; border-radius: 4px; border: 1px solid #444; margin-bottom: 15px; min-height: 60px; display: flex; flex-direction: column; color: #999; overflow-y: auto; max-height: 220px;">
+            <div id="dirNameDisplay">No directory selected</div>
+            <div id="fileList" style="font-size: 0.9em; margin-top: 8px; color: #666;"></div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Processing Levels (pipeline order — each stage needs the previous stage's output)</label>
+          <div class="stage-row" id="stageRow">
+            <label class="stage-checkbox" data-stage="l0b">
+              <input type="checkbox" name="levels" value="l0b" checked> L0b
+              <span class="stage-status" id="status-l0b"></span>
+            </label>
+            <label class="stage-checkbox" data-stage="l1">
+              <input type="checkbox" name="levels" value="l1" checked> L1
+              <span class="stage-status" id="status-l1"></span>
+            </label>
+            <label class="stage-checkbox" data-stage="l2">
+              <input type="checkbox" name="levels" value="l2"> L2
+              <span class="stage-status" id="status-l2"></span>
+            </label>
+            <label class="stage-checkbox" data-stage="l3">
+              <input type="checkbox" name="levels" value="l3"> L3
+              <span class="stage-status" id="status-l3"></span>
+            </label>
+          </div>
+
+          <div id="l1Options" class="level-options" hidden>
+            <label for="pmtModelSource" style="display:inline; font-weight:normal; margin-right:8px;">L1: PMT Model</label>
+            <select id="pmtModelSource" name="pmtModelSource">
+              <option value="datasheet">Datasheet (generic, class-based)</option>
+              <option value="instance">Per-channel (instance-based)</option>
+            </select>
+            <label for="preTriggerBins" style="display:inline; font-weight:normal; margin-left:16px; margin-right:8px;">Detector SNR: pre-trigger bins (N)</label>
+            <input type="number" id="preTriggerBins" name="preTriggerBins" min="0" placeholder="config default" style="width:110px;" title="0 = don't compute (NaN-filled)">
+          </div>
+        </div>
+
+        <button type="submit" id="processBtn" disabled>Process</button>
+      </form>
+
+      <div id="results" class="results">
+        <h3>Results</h3>
+        <pre id="resultsContent"></pre>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Configuration</h2>
+      <button id="getConfigBtn">Get Current Config</button>
+      <div id="configResults" class="results" style="margin-top: 15px;">
+        <pre id="configContent"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api';
+    let selectedDirHandle = null;
+    let csvFiles = [];               // candidate raw shot files (excludes PM files and pipeline outputs)
+    let selectedFileNames = new Set(); // subset of csvFiles the user wants to process
+    let dirFileNames = [];            // every filename currently in the picked directory
+
+    // A file already tagged with a stage, e.g. "foo_L0b_0.csv" -- these are
+    // pipeline outputs, not raw files to (re)process. No separate Processed/
+    // folder: outputs live right next to the raw files they came from.
+    const STAGE_TAG_RE = /_L(0b|1|2|3)_\d+\.csv$/i;
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function getSelectedFiles() {
+      return csvFiles.filter(f => selectedFileNames.has(f.name));
+    }
+
+    // Pipeline order: each stage's output must exist (already on disk, or checked
+    // to be produced in this run) before the next stage can run.
+    const STAGES = [
+      { key: 'l0b', prereq: null },
+      { key: 'l1', prereq: 'l0b' },
+      { key: 'l2', prereq: 'l1' },
+      { key: 'l3', prereq: 'l2' },
+    ];
+    let existingCounts = {}; // stage key -> # of selected files with that stage's output already on disk
+
+    function escapeRegExp(s) {
+      return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function checkboxFor(stage) {
+      return document.querySelector(`input[name="levels"][value="${stage}"]`);
+    }
+
+    function statusFor(stage) {
+      return document.getElementById(`status-${stage}`);
+    }
+
+    // Re-scan the picked directory: which CSVs are candidate raw files to
+    // (re)process (excludes PM files and anything already stage-tagged), and
+    // the full filename listing (used to check what pipeline outputs already
+    // exist, since those now live in this same directory).
+    async function scanDirectory() {
+      csvFiles = [];
+      dirFileNames = [];
+      if (!selectedDirHandle) return;
+      try {
+        for await (const entry of selectedDirHandle.values()) {
+          if (entry.kind !== 'file' || !entry.name.endsWith('.csv')) continue;
+          dirFileNames.push(entry.name);
+          if (/PM|power.?monitor|_power\.csv/i.test(entry.name)) continue;
+          if (STAGE_TAG_RE.test(entry.name)) continue;
+          csvFiles.push(entry);
+        }
+      } catch (err) {
+        console.warn('Could not scan directory:', err);
+      }
+    }
+
+    // Recompute, from the cached directory listing, which stage outputs already
+    // exist for each currently-*selected* shot file (tagged e.g. "<stem>_L1_<seq>.csv").
+    // Synchronous, so it's cheap to call on every checkbox toggle.
+    function computeExistingCounts() {
+      existingCounts = { l0b: 0, l1: 0, l2: 0, l3: 0 };
+      for (const fileEntry of getSelectedFiles()) {
+        const stem = fileEntry.name.replace(/\.csv$/i, '');
+        const stemPattern = escapeRegExp(stem);
+        for (const stage of STAGES) {
+          const tag = stage.key === 'l0b' ? 'L0b' : stage.key.toUpperCase();
+          const re = new RegExp(`^${stemPattern}_${tag}_`, 'i');
+          if (dirFileNames.some(name => re.test(name))) {
+            existingCounts[stage.key]++;
+          }
+        }
+      }
+    }
+
+    // Full refresh: re-scan the directory on disk, then recompute and re-render.
+    // Call after picking a directory or after a batch finishes (new files may exist).
+    async function refreshStageAvailability() {
+      await scanDirectory();
+      // A previously-selected raw file could in principle disappear (renamed,
+      // deleted, or -- now moot -- reclassified as an output); keep selection
+      // limited to files still present.
+      selectedFileNames = new Set([...selectedFileNames].filter(name => csvFiles.some(f => f.name === name)));
+      computeExistingCounts();
+      renderFileList();
+      updateStageStates();
+    }
+
+    // Enable/disable each stage checkbox based on whether its prerequisite is
+    // satisfied for at least one selected file (checked-in-this-run, or already
+    // on disk from a previous run). Auto-uncheck a stage that becomes invalid.
+    function updateStageStates() {
+      const total = getSelectedFiles().length;
+
+      for (const stage of STAGES) {
+        const cb = checkboxFor(stage.key);
+        const status = statusFor(stage.key);
+        const wrapper = cb.closest('.stage-checkbox');
+
+        if (stage.prereq === null) {
+          cb.disabled = total === 0;
+          if (status) status.textContent = '';
+          wrapper.classList.toggle('disabled', cb.disabled);
+          continue;
+        }
+
+        const prereqCb = checkboxFor(stage.prereq);
+        const prereqChecked = prereqCb.checked && !prereqCb.disabled;
+        const readyCount = prereqChecked ? total : (existingCounts[stage.prereq] || 0);
+        const canRun = total > 0 && readyCount > 0;
+
+        cb.disabled = !canRun;
+        // Only force-clear a checked box once we actually know it's invalid for real
+        // files (total > 0). Before a directory is picked, leave defaults untouched.
+        if (total > 0 && !canRun && cb.checked) cb.checked = false;
+        wrapper.classList.toggle('disabled', !canRun);
+
+        if (status) {
+          if (total === 0) {
+            status.textContent = '';
+          } else if (prereqChecked) {
+            status.textContent = `(will run on all ${total})`;
+          } else if (readyCount === 0) {
+            status.textContent = `(needs ${stage.prereq.toUpperCase()} — none found)`;
+          } else {
+            status.textContent = `(${readyCount}/${total} have ${stage.prereq.toUpperCase()} output)`;
+          }
+        }
+      }
+
+      const anyChecked = STAGES.some(s => checkboxFor(s.key).checked);
+      document.getElementById('processBtn').disabled = (total === 0) || !anyChecked;
+
+      // Show L1's options only when L1 is actually selectable and selected
+      const l1Cb = checkboxFor('l1');
+      document.getElementById('l1Options').hidden = !(l1Cb.checked && !l1Cb.disabled);
+    }
+
+    STAGES.forEach(stage => {
+      checkboxFor(stage.key).addEventListener('change', updateStageStates);
+    });
+    updateStageStates(); // initial state: no directory picked yet, so all disabled
+
+    // Check for File System Access API support
+    if (!window.showDirectoryPicker) {
+      document.getElementById('pickDirBtn').disabled = true;
+      document.getElementById('selectionInfo').textContent = '⚠️ File System Access API not supported in this browser. Please use Chrome, Edge, or Safari 16+';
+      document.getElementById('selectionInfo').style.color = '#ff6600';
+    }
+
+    document.getElementById('pickDirBtn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        selectedDirHandle = await window.showDirectoryPicker();
+        await scanDirectory();
+
+        // Default to processing every shot file found; the user can narrow this
+        // down with the per-file checkboxes or the Select All/None buttons.
+        selectedFileNames = new Set(csvFiles.map(f => f.name));
+
+        updateSelectionInfo();
+        computeExistingCounts();
+        updateStageStates();
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          alert(`Error: ${err.message}`);
+        }
+      }
+    });
+
+    function renderFileList() {
+      const fileList = document.getElementById('fileList');
+
+      if (csvFiles.length === 0) {
+        fileList.textContent = selectedDirHandle ? '(No CSV files found)' : '';
+        return;
+      }
+
+      const selectedCount = getSelectedFiles().length;
+      const rows = csvFiles.map(f => `
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; padding:2px 0;">
+          <input type="checkbox" class="file-checkbox" data-filename="${escapeHtml(f.name)}" ${selectedFileNames.has(f.name) ? 'checked' : ''}>
+          📄 ${escapeHtml(f.name)}
+        </label>`).join('');
+      fileList.innerHTML = `<div style="margin-bottom:6px;">${selectedCount} of ${csvFiles.length} selected</div>${rows}`;
+    }
+
+    function updateSelectionInfo() {
+      const info = document.getElementById('selectionInfo');
+      const dirNameDisplay = document.getElementById('dirNameDisplay');
+
+      const haveDir = !!selectedDirHandle;
+      document.getElementById('selectAllBtn').disabled = !haveDir || csvFiles.length === 0;
+      document.getElementById('selectNoneBtn').disabled = !haveDir || csvFiles.length === 0;
+
+      if (!haveDir) {
+        dirNameDisplay.textContent = 'No directory selected';
+        info.style.color = '#999';
+        renderFileList();
+        updateStageStates();
+        return;
+      }
+
+      const dirName = selectedDirHandle.name || 'Selected Directory';
+      dirNameDisplay.textContent = `📁 ${dirName}`;
+      info.style.color = '#00ff00';
+
+      renderFileList();
+      updateStageStates();
+    }
+
+    document.getElementById('fileList').addEventListener('change', (e) => {
+      if (!e.target.classList.contains('file-checkbox')) return;
+      const name = e.target.dataset.filename;
+      if (e.target.checked) selectedFileNames.add(name);
+      else selectedFileNames.delete(name);
+      renderFileList();
+      computeExistingCounts();
+      updateStageStates();
+    });
+
+    document.getElementById('selectAllBtn').addEventListener('click', () => {
+      selectedFileNames = new Set(csvFiles.map(f => f.name));
+      renderFileList();
+      computeExistingCounts();
+      updateStageStates();
+    });
+
+    document.getElementById('selectNoneBtn').addEventListener('click', () => {
+      selectedFileNames = new Set();
+      renderFileList();
+      computeExistingCounts();
+      updateStageStates();
+    });
+
+    document.getElementById('processForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const filesToProcess = getSelectedFiles();
+      if (!selectedDirHandle || filesToProcess.length === 0) {
+        alert('Please select a directory and at least one file to process');
+        return;
+      }
+
+      const levels = Array.from(document.querySelectorAll('input[name="levels"]:checked'))
+        .map(cb => cb.value);
+
+      const resultsDiv = document.getElementById('results');
+      const resultsContent = document.getElementById('resultsContent');
+      resultsDiv.classList.add('show');
+      resultsContent.textContent = `Processing ${filesToProcess.length} file(s)...\n\n`;
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      // Stage tags as they appear in output filenames, in pipeline order.
+      const TAGS = { l0b: 'L0b', l1: 'L1', l2: 'L2', l3: 'L3' };
+
+      // What each stage needs as its uploaded input. The server does one
+      // stage per request now (a combined L0b+L1+L2 JSON response doesn't
+      // scale -- a real file's L1+L2 content alone was >1GB embedded as
+      // JSON), so the browser drives the pipeline: fetch a stage's raw CSV
+      // response, stream it to disk, and reuse the same blob as the next
+      // stage's upload body.
+      const REQUIRED_INPUT = { l0b: 'raw', l1: 'l0b', l2: 'l1' };
+
+      for (const fileEntry of filesToProcess) {
+        try {
+          const stem = fileEntry.name.replace(/\.csv$/i, '');
+          let currentBlob = null;
+          let currentInputStage = null;
+          let anyProduced = false;
+
+          // Make sure currentBlob/currentInputStage hold the given stage's
+          // output before we upload for the next one -- either it's already
+          // what we just produced, or it must already exist on disk (e.g.
+          // this stage's prerequisite wasn't checked because it was already
+          // done in an earlier run).
+          const ensureInput = async (neededStage) => {
+            if (currentInputStage === neededStage) return;
+            if (neededStage === 'raw') {
+              currentBlob = await fileEntry.getFile();
+              currentInputStage = 'raw';
+              return;
+            }
+            const tag = TAGS[neededStage];
+            const re = new RegExp(`^${escapeRegExp(stem)}_${tag}_\\d+\\.csv$`, 'i');
+            const siblingName = dirFileNames.find(name => re.test(name));
+            if (!siblingName) {
+              throw new Error(`No existing ${tag} file found for ${fileEntry.name}`);
+            }
+            const siblingHandle = await selectedDirHandle.getFileHandle(siblingName);
+            currentBlob = await siblingHandle.getFile();
+            currentInputStage = neededStage;
+          };
+
+          for (const stage of STAGES) {
+            if (!levels.includes(stage.key)) continue;
+
+            if (stage.key === 'l3') {
+              resultsContent.textContent += `  ⚠️ L3 processing not yet implemented in this build\n`;
+              continue;
+            }
+
+            await ensureInput(REQUIRED_INPUT[stage.key]);
+
+            const formData = new FormData();
+            formData.append('file', currentBlob, fileEntry.name);
+            formData.append('originalFilename', fileEntry.name); // always the raw file's name, for output naming
+            formData.append('inputStage', currentInputStage);
+            formData.append('stage', stage.key);
+            if (selectedDirHandle) {
+              formData.append('sourceDir', selectedDirHandle.name);
+            }
+            if (stage.key === 'l1') {
+              formData.append('pmtModelSource', document.getElementById('pmtModelSource').value);
+              formData.append('preTriggerBins', document.getElementById('preTriggerBins').value);
+            }
+
+            const response = await fetch(`${API_BASE}/process-file`, {
+              method: 'POST',
+              body: formData
+            });
+
+            if (!response.ok) {
+              let errMsg = `${stage.key.toUpperCase()} failed (HTTP ${response.status})`;
+              try {
+                const errData = await response.json();
+                if (errData.error) errMsg = errData.error;
+              } catch {}
+              throw new Error(errMsg);
+            }
+
+            const contentType = response.headers.get('Content-Type') || '';
+            if (contentType.includes('text/csv')) {
+              const blob = await response.blob();
+              const sequenceId = parseInt(response.headers.get('X-Sequence-Id') || '0', 10);
+              const outputFilename = `${stem}_${TAGS[stage.key]}_${sequenceId}.csv`;
+              try {
+                const outputHandle = await selectedDirHandle.getFileHandle(outputFilename, { create: true });
+                const writable = await outputHandle.createWritable();
+                await blob.stream().pipeTo(writable);
+                resultsContent.textContent += `  → Saved ${outputFilename}\n`;
+                anyProduced = true;
+              } catch (writeErr) {
+                console.error(`Error writing ${stage.key} file:`, writeErr);
+                resultsContent.textContent += `  ⚠️ Error writing ${outputFilename}: ${writeErr.message}\n`;
+              }
+
+              if (stage.key === 'l0b') {
+                const pmMatched = response.headers.get('X-PM-Matched') === 'true';
+                resultsContent.textContent += `  ${pmMatched ? '✓ PM matched' : '⚠️ PM fallback'}\n`;
+              }
+
+              currentBlob = blob;
+              currentInputStage = stage.key;
+            } else {
+              try {
+                const data = await response.json();
+                if (data.warnings) data.warnings.forEach(w => { resultsContent.textContent += `  ⚠️ ${w}\n`; });
+              } catch {}
+            }
+
+            const warningsHeader = response.headers.get('X-Warnings');
+            if (warningsHeader) {
+              try {
+                JSON.parse(warningsHeader).forEach(w => { resultsContent.textContent += `  ⚠️ ${w}\n`; });
+              } catch {}
+            }
+          }
+
+          resultsDiv.classList.remove('error');
+          resultsContent.textContent += anyProduced
+            ? `✓ ${fileEntry.name}\n\n`
+            : `${fileEntry.name}: nothing produced\n\n`;
+          successCount++;
+        } catch (err) {
+          resultsDiv.classList.add('error');
+          resultsContent.textContent += `✗ ${fileEntry.name}: ${err.message}\n\n`;
+          errorCount++;
+        }
+      }
+
+      resultsContent.textContent += `\n---\nCompleted: ${successCount} succeeded, ${errorCount} failed`;
+
+      // Newly written output files may unlock later stages for next run
+      await refreshStageAvailability();
+    });
+
+    function generateL0BCSVContent(l0bData) {
+      // Generate CSV from flattened L0B data structure
+      const metadata = [
+        '# L0b Processing Output',
+        `# Timestamp: ${l0bData.timestamp_utc}`,
+        `# Sequence ID: ${l0bData.sequence_id}`,
+        `# Power A Sum: ${l0bData.power_a_sum}`,
+        `# Power B Sum: ${l0bData.power_b_sum}`,
+        `# PM Source: ${l0bData.pm_source}`,
+        `# Match Quality: ${l0bData.match_quality}`,
+      ].join('\n');
+      
+      // Create header row from ADC channel data
+      const adc_counts = l0bData.adc_counts || {};
+      const rows = [];
+      
+      // Get max number of samples
+      const maxSamples = Math.max(...Object.entries(adc_counts).map(entry => entry[1].length || 0), 0);
+      
+      // Header
+      let header = 'Timestamp,Sequence_ID,Power_A,Power_B,PM_Source,Match_Quality';
+      for (const [channel, samples] of Object.entries(adc_counts)) {
+        if (Array.isArray(samples)) {
+          for (let i = 0; i < samples.length; i++) {
+            header += `,${channel}_${i}`;
+          }
+        }
+      }
+      rows.push(header);
+      
+      // Data row
+      let dataRow = `"${l0bData.timestamp_utc}",${l0bData.sequence_id},${l0bData.power_a_sum},${l0bData.power_b_sum},"${l0bData.pm_source}",${l0bData.match_quality || ''}`;
+      for (const [channel, samples] of Object.entries(adc_counts)) {
+        if (Array.isArray(samples)) {
+          for (const sample of samples) {
+            dataRow += `,${sample}`;
+          }
+        }
+      }
+      rows.push(dataRow);
+      
+      return metadata + '\n' + rows.join('\n');
+    }
+
+
+    document.getElementById('getConfigBtn').addEventListener('click', async () => {
+      try {
+        const response = await fetch(`${API_BASE}/config`);
+        const data = await response.json();
+        const configDiv = document.getElementById('configResults');
+        const configContent = document.getElementById('configContent');
+        configContent.textContent = JSON.stringify(data, null, 2);
+        configDiv.classList.add('show');
+      } catch (err) {
+        alert(`Error fetching config: ${err.message}`);
+      }
+    });
+  </script>
+</body>
+</html>

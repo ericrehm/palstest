@@ -1,0 +1,170 @@
+{
+  "instrument_id": "PALS_SBS312",
+  "laser_wavelength_nm": 532,
+  "deployment_info": {
+    "platform": "RV Investigator",
+    "location": "Coral Sea",
+    "dates": "2026-08-29 onwards"
+  },
+  "channels": {
+    "co_near": {
+      "pmt_model": "R9880U20",
+      "wavelength_nm": 532,
+      "pmt_hv_nominal": 425,
+      "pmt_gain_index": 5,
+      "adc_range_v": 0.4,
+      "adc_full_scale_code": 2047,
+      "responsivity_file": "../pmt/R9880U20_responsivity_digitized.csv",
+      "gain_file": "../pmt/R9880U20_gain_digitized.csv",
+      "resistance_ohms": 50,
+      "S_A" : 1797,
+      "S_K" : 379,
+      "ND_filter_OD": 1.0
+    },
+    "cross_near": {
+      "pmt_model": "R9880U20",
+      "wavelength_nm": 532,
+      "pmt_hv_nominal": 425,
+      "pmt_gain_index": 6,
+      "adc_range_v": 0.4,
+      "adc_full_scale_code": 2047,
+      "responsivity_file": "../pmt/R9880U20_responsivity_digitized.csv",
+      "gain_file": "../pmt/R9880U20_gain_digitized.csv",
+      "resistance_ohms": 50,
+      "S_A" : 2918,
+      "S_K" : 482,
+      "ND_filter_OD": null
+    },
+    "raman_near": {
+      "pmt_model": "R9880U20",
+      "wavelength_nm": 650,
+      "pmt_hv_nominal": 425,
+      "pmt_gain_index": 3,
+      "adc_range_v": 0.4,
+      "adc_full_scale_code": 2047,
+      "responsivity_file": "../pmt/R9880U20_responsivity_digitized.csv",
+      "gain_file": "../pmt/R9880U20_gain_digitized.csv",
+      "resistance_ohms": 50,
+      "S_A" : 1548,
+      "S_K" : 368,
+      "ND_filter_OD": null
+    },
+    "co_far": {
+      "pmt_model": "R9880U20",
+      "wavelength_nm": 650,
+      "pmt_hv_nominal": 425,
+      "pmt_gain_index": 4,
+      "adc_range_v": 0.4,
+      "adc_full_scale_code": 2047,
+      "responsivity_file": "../pmt/R9880U20_responsivity_digitized.csv",
+      "gain_file": "../pmt/R9880U20_gain_digitized.csv",
+      "resistance_ohms": 50,
+      "S_A" : 3385,
+      "S_K" : 583,
+      "ND_filter_OD": null
+    },
+    "cross_far": {
+      "pmt_model": "R9880U20",
+      "wavelength_nm": 532,
+      "pmt_hv_nominal": 425,
+      "pmt_gain_index": 1,
+      "adc_range_v": 0.4,
+      "adc_full_scale_code": 2047,
+      "responsivity_file": "../pmt/R9880U20_responsivity_digitized.csv",
+      "gain_file": "../pmt/R9880U20_gain_digitized.csv",
+      "resistance_ohms": 50,
+      "S_A" : 1646,
+      "S_K" : 354,
+      "ND_filter_OD": null
+    },
+    "raman_far": {
+      "pmt_model": "R9880U20",
+      "wavelength_nm": 532,
+      "pmt_hv_nominal": 425,
+      "pmt_gain_index": 2,
+      "adc_range_v": 0.4,
+      "adc_full_scale_code": 2047,
+      "responsivity_file": "../pmt/R9880U20_responsivity_digitized.csv",
+      "gain_file": "../pmt/R9880U20_gain_digitized.csv",
+      "resistance_ohms": 50,
+      "S_A" : 1686,
+      "S_K" : 370,
+      "ND_filter_OD": null
+    }
+  },
+  "l1_constants": {
+    "c0_m_per_s": 299792458,
+    "n_w": 1.34,
+    "fs_hz": 2500000000,
+    "t0_ns": 0.0,
+    "e_ref_scale": 1.0
+  },
+  "calibration": {
+    "timing_offsets_ns": {
+      "co_near": 0.0,
+      "cross_near": 0.0,
+      "raman_near": 0.0,
+      "co_far": 0.0,
+      "cross_far": 0.0,
+      "raman_far": 0.0
+    },
+    "background": {
+      "co_near": {
+        "B_j": 0.0,
+        "sigma_B_j": 0.0
+      },
+      "cross_near": {
+        "B_j": 0.0,
+        "sigma_B_j": 0.0
+      },
+      "raman_near": {
+        "B_j": 0.0,
+        "sigma_B_j": 0.0
+      },
+      "co_far": {
+        "B_j": 0.0,
+        "sigma_B_j": 0.0
+      },
+      "cross_far": {
+        "B_j": 0.0,
+        "sigma_B_j": 0.0
+      },
+      "raman_far": {
+        "B_j": 0.0,
+        "sigma_B_j": 0.0
+      }
+    }
+  },
+  "processing_defaults": {
+    "background_mad_scale": 1.4826,
+    "background_pre_trigger_bins": 10,
+    "background_late_range_bins": 0,
+    "energy_ref_percentile": 50,
+    "adc_near_clipping_percent": 95.0,
+    "adc_clipping_percent": 99.5,
+    "snr_threshold_l2": 1.0,
+    "g_adc_db": -3.0
+  },
+  "csv_format": {
+    "comment_prefix": "#",
+    "header_key": "pmt_gain_",
+    "channel_identity_column": "Identity",
+    "timestamp_column": "Timestamp",
+    "power_a_columns": [
+      "PowerAMin",
+      "PowerAMax"
+    ],
+    "power_b_columns": [
+      "PowerBMin",
+      "PowerBMax"
+    ],
+    "attitude_columns": [
+      "Roll",
+      "Pitch",
+      "Yaw"
+    ],
+    "temperature_column": "LaserTempC",
+    "samples_per_pulse": 400,
+    "sample_column_pattern": "Bin_"
+  }
+}

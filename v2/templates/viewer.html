@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PALS V2 Viewer1</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    .viewer-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .viewer-row label { font-size: 0.9em; color: #aaa; margin-right: 4px; }
+    select, input[type="file"] { background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; padding: 4px 6px; }
+    #sliderRow { display: flex; align-items: center; gap: 10px; }
+    #timeSlider { flex: 1; }
+    #timeLabel { font-family: monospace; color: #ccc; min-width: 130px; }
+    #loadStatus { color: #999; font-size: 0.9em; }
+    #loadStatus.error { color: #ff6666; }
+    #heatmapChart, #waveformChart { width: 100%; }
+    .tab-nav { display: flex; gap: 8px; margin-top: 10px; }
+    .tab-nav a {
+      padding: 8px 16px; border-radius: 6px; text-decoration: none;
+      color: #ccc; background: #2a2a2a; border: 1px solid #444; font-weight: 500;
+    }
+    .tab-nav a:hover { background: #333; color: #fff; }
+    .tab-nav a.active { background: #3a6ea5; color: #fff; border-color: #3a6ea5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>PALS V2 File Browser</h1>
+      <div class="instrument-id">Instrument: {{ instrument }}</div>
+      <nav class="tab-nav">
+        <a href="/" class="{{ 'active' if active_tab == 'processing' else '' }}">Processing</a>
+        <a href="/viewer" class="{{ 'active' if active_tab == 'viewer1' else '' }}">Browse</a>
+        <a href="/compare" class="{{ 'active' if active_tab == 'viewer2' else '' }}">Compare</a>
+      </nav>
+    </header>
+
+    <div class="section">
+      <div class="viewer-row">
+        <label>File</label>
+        <input type="file" id="fileInput" accept=".csv">
+        <label>Type</label>
+        <select id="fileTypeSelect">
+          <option value="raw">Raw</option>
+          <option value="l0b">L0b</option>
+          <option value="l1">L1</option>
+          <option value="l2">L2</option>
+        </select>
+        <button type="button" id="loadBtn" disabled>Load</button>
+        <span id="loadStatus"></span>
+      </div>
+
+      <div class="viewer-row">
+        <label>Top</label>
+        <select id="identityL" disabled></select>
+        <label>Bottom</label>
+        <select id="identityR" disabled></select>
+      </div>
+
+      <div class="viewer-row" id="sliderRow">
+        <span id="timeLabel">--:-- / --:--</span>
+        <input type="range" id="timeSlider" min="0" max="0" value="0" step="1" disabled>
+      </div>
+
+      <div id="heatmapChart"></div>
+      <div id="waveformChart" style="margin-top: 16px;"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api/viewer';
+    const WINDOW_MS = 20000; // 20s viewing window, per spec
+
+    let meta = null;          // last /load response
+    let windowCache = new Map(); // `${identity}|${startMs}` -> {timestamps, z}
+    let sliderStartSec = 0;
+    let debounceTimer = null;
+    let clickedAnchor = null; // {identity: 'l'|'r', ts, colIndex}
+
+    const fileInput = document.getElementById('fileInput');
+    const fileTypeSelect = document.getElementById('fileTypeSelect');
+    const loadBtn = document.getElementById('loadBtn');
+    const loadStatus = document.getElementById('loadStatus');
+    const identityLSelect = document.getElementById('identityL');
+    const identityRSelect = document.getElementById('identityR');
+    const timeSlider = document.getElementById('timeSlider');
+    const timeLabel = document.getElementById('timeLabel');
+
+    // Guess file type from the pipeline-output tag in the filename, same
+    // convention as index_v2.html's STAGE_TAG_RE.
+    const STAGE_TAG_RE = /_L(0b|1|2)_\d+\.csv$/i;
+
+    // Browsers' native file picker can't filter by filename pattern (only
+    // by extension/MIME type via `accept`), so this is enforced after the
+    // fact: reject a selection that doesn't look like the chosen Type/Level
+    // rather than silently uploading a mismatched file.
+    const STAGE_PATTERNS = { l0b: /_L0b_\d+\.csv$/i, l1: /_L1_\d+\.csv$/i, l2: /_L2_\d+\.csv$/i };
+    const PM_RE = /PM|power.?monitor|_power\.csv/i;
+
+    function fileMatchesType(filename, fileType) {
+      if (fileType === 'raw') return !PM_RE.test(filename) && !STAGE_TAG_RE.test(filename);
+      const re = STAGE_PATTERNS[fileType];
+      return re ? re.test(filename) : true;
+    }
+
+    function validateFileSelection() {
+      const f = fileInput.files[0];
+      if (!f) { loadBtn.disabled = true; return; }
+      if (!fileMatchesType(f.name, fileTypeSelect.value)) {
+        loadStatus.classList.add('error');
+        loadStatus.textContent = `"${f.name}" doesn't look like a ${fileTypeSelect.value.toUpperCase()} file`;
+        loadBtn.disabled = true;
+        return;
+      }
+      loadStatus.classList.remove('error');
+      loadStatus.textContent = '';
+      loadBtn.disabled = false;
+    }
+
+    fileInput.addEventListener('change', () => {
+      const f = fileInput.files[0];
+      if (!f) { loadBtn.disabled = true; return; }
+      const m = f.name.match(STAGE_TAG_RE);
+      if (m) fileTypeSelect.value = m[1].toLowerCase() === '0b' ? 'l0b' : `l${m[1].toLowerCase()}`;
+      validateFileSelection();
+    });
+    fileTypeSelect.addEventListener('change', validateFileSelection);
+
+    function formatMMSS(ms) {
+      const totalSec = Math.max(0, Math.round(ms / 1000));
+      const mm = Math.floor(totalSec / 60);
+      const ss = totalSec % 60;
+      return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+    }
+
+    loadBtn.addEventListener('click', async () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      loadStatus.classList.remove('error');
+      loadStatus.textContent = 'Loading…';
+      loadBtn.disabled = true;
+
+      try {
+        const formData = new FormData();
+        formData.append('file', f);
+        formData.append('fileType', fileTypeSelect.value);
+        const resp = await fetch(`${API_BASE}/load`, { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+
+        meta = data;
+        windowCache.clear();
+        loadStatus.textContent = `${data.filename}: ${data.identities.length} identities, ` +
+          `${formatMMSS(data.end_ms - data.start_ms)} total`;
+
+        identityLSelect.innerHTML = data.identities.map(id => `<option value="${id}">${id}</option>`).join('');
+        identityRSelect.innerHTML = identityLSelect.innerHTML;
+        // Sensible defaults: co_near vs cross_near if present, else first two.
+        const lower = data.identities.map(i => i.toLowerCase());
+        const coIdx = lower.findIndex(i => i === 'cross_near');
+        const crossIdx = lower.findIndex(i => i === 'co_near');
+        identityLSelect.selectedIndex = coIdx >= 0 ? coIdx : 0;
+        identityRSelect.selectedIndex = crossIdx >= 0 ? crossIdx : Math.min(1, data.identities.length - 1);
+        identityLSelect.disabled = false;
+        identityRSelect.disabled = false;
+
+        const totalSec = Math.max(1, Math.round((data.end_ms - data.start_ms) / 1000));
+        const windowSec = WINDOW_MS / 1000;
+        timeSlider.min = 0;
+        timeSlider.max = Math.max(0, totalSec - windowSec);
+        timeSlider.value = 0;
+        timeSlider.disabled = false;
+        sliderStartSec = 0;
+        clickedAnchor = null;
+
+        await refreshWindow();
+      } catch (err) {
+        loadStatus.classList.add('error');
+        loadStatus.textContent = `Error: ${err.message}`;
+      } finally {
+        loadBtn.disabled = false;
+      }
+    });
+
+    // refreshWindow() runs unawaited from these handlers -- without a .catch,
+    // a thrown error would only ever surface as a console rejection that's
+    // easy to miss, rather than something visible on the page.
+    function refreshWindowSafe() {
+      refreshWindow().catch(err => {
+        loadStatus.classList.add('error');
+        loadStatus.textContent = `Error: ${err.message}`;
+      });
+    }
+
+    identityLSelect.addEventListener('change', () => { clickedAnchor = null; refreshWindowSafe(); });
+    identityRSelect.addEventListener('change', () => { clickedAnchor = null; refreshWindowSafe(); });
+
+    timeSlider.addEventListener('input', () => {
+      sliderStartSec = Number(timeSlider.value);
+      updateTimeLabel();
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(refreshWindowSafe, 120);
+    });
+
+    function updateTimeLabel() {
+      if (!meta) return;
+      const startMs = sliderStartSec * 1000;
+      const totalMs = meta.end_ms - meta.start_ms;
+      timeLabel.textContent = `${formatMMSS(startMs)} / ${formatMMSS(totalMs)}`;
+    }
+
+    async function fetchWindow(identity, startMs, endMs) {
+      const key = `${identity}|${startMs}`;
+      if (windowCache.has(key)) return windowCache.get(key);
+      const url = `${API_BASE}/window?identity=${encodeURIComponent(identity)}&start_ms=${startMs}&end_ms=${endMs}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      windowCache.set(key, data);
+      // Cap cache growth during long scroll sessions.
+      if (windowCache.size > 40) {
+        windowCache.delete(windowCache.keys().next().value);
+      }
+      return data;
+    }
+
+    // Fire-and-forget prefetch of the next window so continued forward
+    // scrolling feels instant instead of waiting on a round-trip each step.
+    function prefetchNext(identityL, identityR, startMs) {
+      const nextStart = startMs + WINDOW_MS;
+      if (meta && nextStart > meta.end_ms) return;
+      fetchWindow(identityL, nextStart, nextStart + WINDOW_MS).catch(() => {});
+      if (identityR !== identityL) {
+        fetchWindow(identityR, nextStart, nextStart + WINDOW_MS).catch(() => {});
+      }
+    }
+
+    async function refreshWindow() {
+      if (!meta) return;
+      updateTimeLabel();
+      const identityL = identityLSelect.value;
+      const identityR = identityRSelect.value;
+      const startMs = meta.start_ms + sliderStartSec * 1000;
+      const endMs = startMs + WINDOW_MS;
+
+      const [winL, winR] = await Promise.all([
+        fetchWindow(identityL, startMs, endMs),
+        fetchWindow(identityR, startMs, endMs),
+      ]);
+
+      renderHeatmaps(identityL, identityR, winL, winR);
+      renderWaveforms(identityL, identityR, winL, winR, clickedAnchor);
+      prefetchNext(identityL, identityR, startMs);
+    }
+
+    function relMs(ts) { return ts - meta.start_ms; }
+
+    function heatmapTrace(identity, win, xaxis, yaxis, zRange, showscale) {
+      const axis = meta.axes[identity] || [];
+      // Since x is a plain numeric (ms-elapsed) axis now, not Plotly's
+      // `type: 'date'`, hover would otherwise show the raw number -- build a
+      // per-column mm:ss text row (repeated per bin) so hover reads sensibly.
+      const timeText = win.timestamps.map(ts => formatMMSS(relMs(ts)));
+      return {
+        x: win.timestamps.map(relMs),
+        y: axis,
+        z: win.z,
+        text: win.z.map(() => timeText),
+        type: 'heatmap',
+        colorscale: 'Viridis',
+        zmin: zRange[0], zmax: zRange[1],
+        xaxis, yaxis,
+        hovertemplate: `${identity}<br>t=%{text}<br>%{y}<br>%{z}<extra></extra>`,
+        showscale,
+        colorbar: { title: 'Signal' },
+      };
+    }
+
+    function axisRangeFor(identity) {
+      const axis = meta.axes[identity] || [0, 1];
+      return [axis[axis.length - 1], axis[0]]; // reversed: increasing bin/range downward
+    }
+
+    // One shared color scale across both heatmaps -- otherwise each trace
+    // auto-scales to its own min/max and ends up with two colorbars showing
+    // slightly different numbers for visually-identical colors.
+    function combinedZRange(zA, zB) {
+      let mn = Infinity, mx = -Infinity;
+      for (const z of [zA, zB]) {
+        for (const row of z) {
+          for (const v of row) {
+            if (v == null || !Number.isFinite(v)) continue;
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+          }
+        }
+      }
+      return (Number.isFinite(mn) && Number.isFinite(mx)) ? [mn, mx] : [0, 1];
+    }
+
+    // Guards the manual y-axis sync below against feedback loops: our own
+    // Plotly.relayout call would otherwise re-trigger 'plotly_relayout'.
+    let syncingHeatmapAxes = false;
+
+    // Plotly.react() deliberately preserves the *runtime* x-axis range across
+    // updates (so it doesn't fight a user's manual zoom) -- it does NOT
+    // recompute autorange just because new traces/data arrived. Without an
+    // explicit range here, switching from a long file to a much shorter one
+    // keeps the old (wide) time range, squeezing the new file's real data
+    // into a sliver near the left edge and collapsing the tick labels to
+    // 00:00. So the x-range is computed fresh from the *current* window's
+    // own timestamps on every render, instead of relying on autorange.
+    function xRangeForWindows(winL, winR) {
+      const allTs = [...winL.timestamps, ...winR.timestamps].map(relMs);
+      if (!allTs.length) return undefined;
+      return [Math.min(...allTs), Math.max(...allTs)];
+    }
+
+    // Plain numeric axis with manually-built tickvals/ticktext, not a Plotly
+    // `type: 'date'` axis -- matches the original app.py viewer exactly
+    // (formatPulseTime/heatmapTimeTicks in templates/index.html), which
+    // never uses `type: 'date'` for its heatmaps at all. A date-type axis
+    // risks returning its own internal date-string representation for a
+    // click event's p.x instead of the raw number that was plotted, which
+    // is a plausible reason clicks/hover could misbehave; a plain numeric
+    // axis guarantees p.x is exactly the same number that was passed in.
+    function timeTicksFor(range) {
+      if (!range) return {};
+      const [lo, hi] = range;
+      const span = hi - lo;
+      const stepMs = span <= 30000 ? 2000 : (span <= 120000 ? 10000 : 30000);
+      const tickvals = [];
+      const ticktext = [];
+      const first = Math.ceil(lo / stepMs) * stepMs;
+      for (let t = first; t <= hi; t += stepMs) {
+        tickvals.push(t);
+        ticktext.push(formatMMSS(t));
+      }
+      return { tickvals, ticktext };
+    }
+
+    function renderHeatmaps(identityL, identityR, winL, winR) {
+      const zRange = combinedZRange(winL.z, winR.z);
+      const traces = [
+        heatmapTrace(identityL, winL, 'x', 'y', zRange, true),
+        heatmapTrace(identityR, winR, 'x', 'y2', zRange, false),
+      ];
+      const xRange = xRangeForWindows(winL, winR);
+      const layout = {
+        height: 560,
+        margin: { l: 70, r: 20, t: 30, b: 40 },
+        paper_bgcolor: '#1a1a1a',
+        plot_bgcolor: '#1a1a1a',
+        font: { color: '#e0e0e0' },
+        xaxis: {
+          title: 'Time (mm:ss)',
+          range: xRange, gridcolor: '#333', anchor: 'y',
+          ...timeTicksFor(xRange),
+        },
+        yaxis: {
+          domain: [0.55, 1], title: `${identityL} (${meta.axis_labels[identityL] || 'Bin'})`,
+          range: axisRangeFor(identityL), gridcolor: '#333',
+        },
+        yaxis2: {
+          domain: [0, 0.45], title: `${identityR} (${meta.axis_labels[identityR] || 'Bin'})`,
+          range: axisRangeFor(identityR), gridcolor: '#333', anchor: 'x',
+        },
+      };
+
+      const el = document.getElementById('heatmapChart');
+      // newPlot (not react), and responsive: false -- both match the
+      // proven-working pattern in the original app.py viewer
+      // (templates/index.html's buildHeatmapPanel). react()'s state
+      // preservation across updates is what caused the earlier x-axis-
+      // staleness bug; responsive: true attaches a ResizeObserver that can
+      // resize the plot's hit-testing surface after any later page reflow
+      // (e.g. a longer/shorter identity label shifting layout), leaving
+      // stale coordinate mapping behind -- the likely cause of hover/click
+      // getting stuck on the last column after the first interaction.
+      Plotly.newPlot(el, traces, layout, { displayModeBar: true, responsive: false });
+
+      el.removeAllListeners && el.removeAllListeners('plotly_click');
+      el.on('plotly_click', (ev) => {
+        const p = ev.points && ev.points[0];
+        if (!p) return;
+        // p.x (the actual clicked value), not p.pointIndex -- pointIndex is
+        // documented as less reliable for 2D/heatmap traces in some
+        // Plotly.js versions and can go stale on repeat clicks, whereas x/y
+        // are always freshly derived from the cursor position. Matches the
+        // original app.py viewer's click handler, which uses p.x the same
+        // way. renderWaveforms() nearest-matches this back to a real shot
+        // for both panels anyway, so exact rounding here doesn't matter.
+        const side = p.curveNumber === 0 ? 'l' : 'r';
+        clickedAnchor = { side, ts: meta.start_ms + Number(p.x) };
+        renderWaveforms(identityL, identityR, winL, winR, clickedAnchor);
+      });
+
+      // Both heatmaps already share one xaxis id ('x'), so box-zoom/pan syncs
+      // horizontally for free. y and y2 are separate axes (independent
+      // domains, since the two panels can show different-scale identities),
+      // so a drag-zoom on one panel's y only touches that axis by default --
+      // mirror it onto the other explicitly. (Tried Plotly's built-in
+      // `matches` for this first; it made heatmap cells vanish for some
+      // identity pairs, so this event-driven sync replaces it.)
+      el.removeAllListeners && el.removeAllListeners('plotly_relayout');
+      el.on('plotly_relayout', (ev) => {
+        if (syncingHeatmapAxes) return;
+        syncingHeatmapAxes = true;
+        try {
+          if (ev['yaxis.range[0]'] !== undefined) {
+            Plotly.relayout(el, { 'yaxis2.range': [ev['yaxis.range[0]'], ev['yaxis.range[1]']] });
+          } else if (ev['yaxis2.range[0]'] !== undefined) {
+            Plotly.relayout(el, { 'yaxis.range': [ev['yaxis2.range[0]'], ev['yaxis2.range[1]']] });
+          } else if (ev['yaxis.autorange'] || ev['yaxis2.autorange']) {
+            // Double-click (reset axes) resets whichever axis it fired on;
+            // reset both back to their full extents together.
+            Plotly.relayout(el, {
+              'yaxis.range': axisRangeFor(identityL),
+              'yaxis2.range': axisRangeFor(identityR),
+            });
+          }
+        } finally {
+          syncingHeatmapAxes = false;
+        }
+      });
+    }
+
+    // Nearest-timestamp match, same idea as L1CrossProcessor's cross-channel
+    // pairing: L and R aren't necessarily sampled at the same instant.
+    function nearestColumn(win, targetTs) {
+      if (!win.timestamps.length) return -1;
+      let best = 0, bestDelta = Infinity;
+      for (let i = 0; i < win.timestamps.length; i++) {
+        const d = Math.abs(win.timestamps[i] - targetTs);
+        if (d < bestDelta) { bestDelta = d; best = i; }
+      }
+      return best;
+    }
+
+    function column(win, idx) {
+      if (idx < 0) return null;
+      return win.z.map(row => row[idx]);
+    }
+
+    function renderWaveforms(identityL, identityR, winL, winR, anchor) {
+      const el = document.getElementById('waveformChart');
+      const axisL = meta.axes[identityL] || [];
+      const axisR = meta.axes[identityR] || [];
+
+      if (!anchor) {
+        // Default to the last shot in the window until the user clicks.
+        anchor = winL.timestamps.length
+          ? { side: 'l', ts: winL.timestamps[winL.timestamps.length - 1] }
+          : (winR.timestamps.length ? { side: 'r', ts: winR.timestamps[winR.timestamps.length - 1] } : null);
+      }
+      if (!anchor) { Plotly.react(el, [], {}); return; }
+
+      const idxL = nearestColumn(winL, anchor.ts);
+      const idxR = nearestColumn(winR, anchor.ts);
+      const colL = column(winL, idxL);
+      const colR = column(winR, idxR);
+
+      const traces = [];
+      if (colL) traces.push({ x: axisL, y: colL, name: identityL, xaxis: 'x2', yaxis: 'y3', line: { color: '#4fc3f7' } });
+      if (colR) traces.push({ x: axisR, y: colR, name: identityR, xaxis: 'x2', yaxis: 'y3', line: { color: '#ffb74d' } });
+
+      if (colL && colR) {
+        const n = Math.min(colL.length, colR.length);
+        const quotient = [];
+        for (let i = 0; i < n; i++) {
+          const denom = colR[i];
+          quotient.push(Math.abs(denom) < 1e-9 ? null : colL[i] / denom);
+        }
+        traces.push({
+          x: axisL.slice(0, n), y: quotient, xaxis: 'x3', yaxis: 'y4',
+          name: `${identityL} / ${identityR}`, line: { color: '#81c784' },
+        });
+      }
+
+      const layout = {
+        height: 480,
+        margin: { l: 70, r: 20, t: 30, b: 40 },
+        paper_bgcolor: '#1a1a1a',
+        plot_bgcolor: '#1a1a1a',
+        font: { color: '#e0e0e0' },
+        showlegend: true,
+        legend: { orientation: 'h' },
+        xaxis2: {
+          domain: [0, 1], title: meta.axis_labels[identityL] || 'Bin', anchor: 'y3', gridcolor: '#333',
+        },
+        yaxis3: { domain: [0.55, 1], title: 'Signal', gridcolor: '#333' },
+        xaxis3: {
+          domain: [0, 1], anchor: 'y4', matches: 'x2', gridcolor: '#333',
+          title: meta.axis_labels[identityL] || 'Bin',
+        },
+        yaxis4: { domain: [0, 0.45], title: `${identityL} / ${identityR}`, gridcolor: '#333' },
+        annotations: [{
+          text: `t = ${formatMMSS(relMs(anchor.ts))}`, xref: 'paper', yref: 'paper',
+          x: 1, y: 1.06, showarrow: false, font: { color: '#999', size: 11 },
+        }],
+      };
+
+      Plotly.newPlot(el, traces, layout, { displayModeBar: true, responsive: true });
+    }
+  </script>
+</body>
+</html>

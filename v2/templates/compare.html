@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PALS V2 Viewer2</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    /* Single source of truth for the A/B trace colors -- read by JS too
+       (getComputedStyle) so the waveform lines, Load buttons, and sliders
+       can never drift out of sync with each other. */
+    :root { --color-a: #4fc3f7; --color-b: #ffb74d; }
+    .viewer-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .viewer-row label { font-size: 0.9em; color: #aaa; margin-right: 4px; }
+    select, input[type="file"] { background: #2a2a2a; color: #e0e0e0; border: 1px solid #444; border-radius: 4px; padding: 4px 6px; }
+    input[type="file"] { max-width: 190px; font-size: 0.85em; }
+    .file-panel { border: 1px solid #3a3a3a; border-radius: 8px; padding: 12px; flex: 1; min-width: 320px; }
+    .file-panels { display: flex; gap: 16px; margin-bottom: 16px; }
+    .slider-row { display: flex; align-items: center; gap: 10px; }
+    .slider-row input[type="range"] { flex: 1; }
+    .time-label { font-family: monospace; color: #ccc; min-width: 130px; }
+    .load-status { color: #999; font-size: 0.9em; }
+    .load-status.error { color: #ff6666; }
+    #waveformChart { width: 100%; }
+    #loadBtnA, #loadBtnB { font-weight: 600; color: #111; border: none; }
+    #loadBtnA { background: var(--color-a); }
+    #loadBtnB { background: var(--color-b); }
+    #loadBtnA:disabled, #loadBtnB:disabled { opacity: 0.4; color: #111; }
+    #timeSliderA { accent-color: var(--color-a); }
+    #timeSliderB { accent-color: var(--color-b); }
+    .tab-nav { display: flex; gap: 8px; margin-top: 10px; }
+    .tab-nav a {
+      padding: 8px 16px; border-radius: 6px; text-decoration: none;
+      color: #ccc; background: #2a2a2a; border: 1px solid #444; font-weight: 500;
+    }
+    .tab-nav a:hover { background: #333; color: #fff; }
+    .tab-nav a.active { background: #3a6ea5; color: #fff; border-color: #3a6ea5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>PALS V2 File Compare</h1>
+      <div class="instrument-id">Instrument: {{ instrument }}</div>
+      <nav class="tab-nav">
+        <a href="/" class="{{ 'active' if active_tab == 'processing' else '' }}">Processing</a>
+        <a href="/viewer" class="{{ 'active' if active_tab == 'viewer1' else '' }}">Browse</a>
+        <a href="/compare" class="{{ 'active' if active_tab == 'viewer2' else '' }}">Compare</a>
+      </nav>
+    </header>
+
+    <div class="section">
+      <div class="viewer-row" style="flex-wrap: nowrap;">
+        <label>Level</label>
+        <select id="fileTypeSelect">
+          <option value="raw">Raw</option>
+          <option value="l0b">L0b</option>
+          <option value="l1">L1</option>
+          <option value="l2">L2</option>
+        </select>
+        <label>Identity</label>
+        <select id="identitySelect" disabled></select>
+      </div>
+
+      <div class="file-panels">
+        <div class="file-panel">
+          <div class="viewer-row">
+            <label>File A</label>
+            <input type="file" id="fileInputA" accept=".csv">
+            <button type="button" id="loadBtnA" disabled>Load A</button>
+          </div>
+          <span class="load-status" id="loadStatusA"></span>
+          <div class="slider-row" style="margin-top:8px;">
+            <span class="time-label" id="timeLabelA">--:-- / --:--</span>
+            <input type="range" id="timeSliderA" min="0" max="0" value="0" step="1" disabled>
+            <label style="margin:0;"><input type="checkbox" id="avgCheckA" disabled> Average</label>
+          </div>
+        </div>
+
+        <div class="file-panel">
+          <div class="viewer-row">
+            <label>File B</label>
+            <input type="file" id="fileInputB" accept=".csv">
+            <button type="button" id="loadBtnB" disabled>Load B</button>
+          </div>
+          <span class="load-status" id="loadStatusB"></span>
+          <div class="slider-row" style="margin-top:8px;">
+            <span class="time-label" id="timeLabelB">--:-- / --:--</span>
+            <input type="range" id="timeSliderB" min="0" max="0" value="0" step="1" disabled>
+            <label style="margin:0;"><input type="checkbox" id="avgCheckB" disabled> Average</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="viewer-row">
+        <label>Compare</label>
+        <label style="font-weight:normal;"><input type="radio" name="combineMode" value="ratio" checked> Ratio (A / B)</label>
+        <label style="font-weight:normal;"><input type="radio" name="combineMode" value="difference"> Difference (A - B)</label>
+      </div>
+
+      <div id="waveformChart"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api/compare';
+
+    // Read from the CSS custom properties (see :root above) rather than
+    // hardcoding hex values here, so the waveform lines always match the
+    // Load buttons/sliders they're colored the same as.
+    const rootStyle = getComputedStyle(document.documentElement);
+    const COLOR_A = rootStyle.getPropertyValue('--color-a').trim();
+    const COLOR_B = rootStyle.getPropertyValue('--color-b').trim();
+
+    const state = {
+      meta: { a: null, b: null },
+      waveform: { a: null, b: null },  // {ts, z} or {isAverage: true, z}
+      axis: { a: null, b: null },
+      baseStatus: { a: '', b: '' },  // the "<file>: N identities, MM:SS total" line, kept separate from the PMT-gain suffix so an identity change can update just that suffix
+      pmtGainIndex: null,  // {identity: gain index 1-6}, from /api/config's channels -- also doubles as "is this a real PMT channel", since ratio/QA/ensemble identities aren't in it
+    };
+
+    // instrument_id -> pmt_gain_index comes from the instrument config, not
+    // the loaded file -- fetch it once at page load.
+    (async () => {
+      try {
+        const resp = await fetch('/api/config');
+        const config = await resp.json();
+        const map = {};
+        for (const [identity, ch] of Object.entries(config.channels || {})) {
+          if (ch.pmt_gain_index != null) map[identity] = ch.pmt_gain_index;
+        }
+        state.pmtGainIndex = map;
+      } catch {
+        state.pmtGainIndex = {};
+      }
+      renderLoadStatus('a');
+      renderLoadStatus('b');
+    })();
+
+    const fileInputA = document.getElementById('fileInputA');
+    const fileInputB = document.getElementById('fileInputB');
+    const loadBtnA = document.getElementById('loadBtnA');
+    const loadBtnB = document.getElementById('loadBtnB');
+    const loadStatusA = document.getElementById('loadStatusA');
+    const loadStatusB = document.getElementById('loadStatusB');
+    const fileTypeSelect = document.getElementById('fileTypeSelect');
+    const identitySelect = document.getElementById('identitySelect');
+    const timeSliderA = document.getElementById('timeSliderA');
+    const timeSliderB = document.getElementById('timeSliderB');
+    const timeLabelA = document.getElementById('timeLabelA');
+    const timeLabelB = document.getElementById('timeLabelB');
+    const avgCheckA = document.getElementById('avgCheckA');
+    const avgCheckB = document.getElementById('avgCheckB');
+
+    // Browsers' native file picker can't filter by filename pattern (only
+    // by extension/MIME type via `accept`), so this is enforced after the
+    // fact: reject a selection that doesn't look like the chosen Type/Level
+    // rather than silently uploading a mismatched file.
+    const STAGE_PATTERNS = { l0b: /_L0b_\d+\.csv$/i, l1: /_L1_\d+\.csv$/i, l2: /_L2_\d+\.csv$/i };
+    const ANY_STAGE_TAG_RE = /_L(0b|1|2)_\d+\.csv$/i;
+    const PM_RE = /PM|power.?monitor|_power\.csv/i;
+
+    function fileMatchesType(filename, fileType) {
+      if (fileType === 'raw') return !PM_RE.test(filename) && !ANY_STAGE_TAG_RE.test(filename);
+      const re = STAGE_PATTERNS[fileType];
+      return re ? re.test(filename) : true;
+    }
+
+    function validateFileSelection(fileInput, loadBtn, loadStatus) {
+      const f = fileInput.files[0];
+      if (!f) { loadBtn.disabled = true; return; }
+      if (!fileMatchesType(f.name, fileTypeSelect.value)) {
+        loadStatus.classList.add('error');
+        loadStatus.textContent = `"${f.name}" doesn't look like a ${fileTypeSelect.value.toUpperCase()} file`;
+        loadBtn.disabled = true;
+        return;
+      }
+      loadStatus.classList.remove('error');
+      loadStatus.textContent = '';
+      loadBtn.disabled = false;
+    }
+
+    fileInputA.addEventListener('change', () => validateFileSelection(fileInputA, loadBtnA, loadStatusA));
+    fileInputB.addEventListener('change', () => validateFileSelection(fileInputB, loadBtnB, loadStatusB));
+    fileTypeSelect.addEventListener('change', () => {
+      validateFileSelection(fileInputA, loadBtnA, loadStatusA);
+      validateFileSelection(fileInputB, loadBtnB, loadStatusB);
+    });
+
+    function formatMMSS(ms) {
+      const totalSec = Math.max(0, Math.round(ms / 1000));
+      const mm = Math.floor(totalSec / 60);
+      const ss = totalSec % 60;
+      return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+    }
+
+    function updateIdentityOptions() {
+      const a = state.meta.a, b = state.meta.b;
+      let identities;
+      if (a && b) {
+        const setB = new Set(b.identities);
+        identities = a.identities.filter(i => setB.has(i));
+      } else if (a) {
+        identities = a.identities;
+      } else if (b) {
+        identities = b.identities;
+      } else {
+        identities = [];
+      }
+      const prevValue = identitySelect.value;
+      identitySelect.innerHTML = identities.map(id => `<option value="${id}">${id}</option>`).join('');
+      identitySelect.disabled = identities.length === 0;
+      if (identities.includes(prevValue)) identitySelect.value = prevValue;
+    }
+
+    async function loadFile(slot, file, fileType) {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('fileType', fileType);
+      formData.append('slot', slot);
+      const resp = await fetch(`${API_BASE}/load`, { method: 'POST', body: formData });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    // Appends "PMT gain (ch<N>): <value> V" to the load-status line for the
+    // currently-selected identity, if it's one of the six real PMT channels
+    // (state.pmtGainIndex only has entries for those) and the loaded file's
+    // header actually recorded that channel's gain setpoint.
+    function renderLoadStatus(slot) {
+      const loadStatus = slot === 'a' ? loadStatusA : loadStatusB;
+      if (loadStatus.classList.contains('error')) return;  // don't clobber an error message
+      const base = state.baseStatus[slot];
+      if (!base) return;
+      const meta = state.meta[slot];
+      const identity = identitySelect.value;
+      let gainText = '';
+      if (state.pmtGainIndex && meta && identity && Object.prototype.hasOwnProperty.call(state.pmtGainIndex, identity)) {
+        const idx = state.pmtGainIndex[identity];
+        const gain = meta.pmt_gain_by_index && meta.pmt_gain_by_index[String(idx)];
+        if (gain !== undefined) gainText = ` | PMT gain (ch${idx}): ${gain} V`;
+      }
+      loadStatus.textContent = base + gainText;
+    }
+
+    function wireLoadButton(slot, fileInput, loadBtn, loadStatus, slider, timeLabel, avgCheck) {
+      loadBtn.addEventListener('click', async () => {
+        const f = fileInput.files[0];
+        if (!f) return;
+        loadStatus.classList.remove('error');
+        loadStatus.textContent = 'Loading…';
+        loadBtn.disabled = true;
+        try {
+          const meta = await loadFile(slot, f, fileTypeSelect.value);
+          state.meta[slot] = meta;
+          state.baseStatus[slot] = `${meta.filename}: ${meta.identities.length} identities, ${formatMMSS(meta.end_ms - meta.start_ms)} total`;
+
+          const totalSec = Math.max(1, Math.round((meta.end_ms - meta.start_ms) / 1000));
+          slider.min = 0;
+          slider.max = totalSec;
+          slider.value = 0;
+          slider.disabled = false;
+          avgCheck.disabled = false;
+          timeLabel.textContent = `${formatMMSS(0)} / ${formatMMSS(meta.end_ms - meta.start_ms)}`;
+
+          // Must run before renderLoadStatus(): on the very first file load,
+          // identitySelect has no options yet (empty .value), so the PMT-gain
+          // lookup would silently find nothing -- this is why whichever file
+          // loaded first was missing its gain while the second "just worked"
+          // (it inherited an already-populated dropdown from the first).
+          updateIdentityOptions();
+          // Both, not just this slot: updateIdentityOptions() can change the
+          // shared identity selection (e.g. the previously-selected identity
+          // isn't in the new A/B intersection), which would leave the other
+          // file's already-rendered gain text stale otherwise.
+          renderLoadStatus('a');
+          renderLoadStatus('b');
+          await refreshSlot(slot, true);
+        } catch (err) {
+          loadStatus.classList.add('error');
+          loadStatus.textContent = `Error: ${err.message}`;
+        } finally {
+          loadBtn.disabled = false;
+        }
+      });
+    }
+
+    wireLoadButton('a', fileInputA, loadBtnA, loadStatusA, timeSliderA, timeLabelA, avgCheckA);
+    wireLoadButton('b', fileInputB, loadBtnB, loadStatusB, timeSliderB, timeLabelB, avgCheckB);
+
+    async function fetchShot(slot, targetMs) {
+      const identity = identitySelect.value;
+      const url = `${API_BASE}/shot?slot=${slot}&identity=${encodeURIComponent(identity)}&target_ms=${targetMs}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    async function fetchAverage(slot) {
+      const identity = identitySelect.value;
+      const url = `${API_BASE}/average?slot=${slot}&identity=${encodeURIComponent(identity)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    let refreshTimers = { a: null, b: null };
+
+    async function refreshSlot(slot, resetView) {
+      const meta = state.meta[slot];
+      if (!meta || !identitySelect.value) return;
+      const avgCheck = slot === 'a' ? avgCheckA : avgCheckB;
+      const slider = slot === 'a' ? timeSliderA : timeSliderB;
+      const loadStatus = slot === 'a' ? loadStatusA : loadStatusB;
+
+      try {
+        state.axis[slot] = meta.axes[identitySelect.value] || [];
+        if (avgCheck.checked) {
+          const data = await fetchAverage(slot);
+          state.waveform[slot] = { isAverage: true, z: data.z };
+        } else {
+          const sliderSec = Number(slider.value);
+          const targetMs = meta.start_ms + sliderSec * 1000;
+          const data = await fetchShot(slot, targetMs);
+          state.waveform[slot] = { isAverage: false, ts: data.timestamp_ms, z: data.z };
+        }
+        renderWaveforms(resetView);
+      } catch (err) {
+        loadStatus.classList.add('error');
+        loadStatus.textContent = `Error: ${err.message}`;
+      }
+    }
+
+    // Moving a slider, toggling Average, or switching Ratio/Difference keep
+    // the user's current zoom (renderWaveforms's default, resetView=false).
+    // Only a new file load or an identity change -- both of which can
+    // change the axis scale entirely -- force a fresh view.
+    function wireSlider(slot, slider, timeLabel) {
+      slider.addEventListener('input', () => {
+        const meta = state.meta[slot];
+        if (meta) {
+          timeLabel.textContent = `${formatMMSS(Number(slider.value) * 1000)} / ${formatMMSS(meta.end_ms - meta.start_ms)}`;
+        }
+        clearTimeout(refreshTimers[slot]);
+        refreshTimers[slot] = setTimeout(() => refreshSlot(slot), 120);
+      });
+    }
+    wireSlider('a', timeSliderA, timeLabelA);
+    wireSlider('b', timeSliderB, timeLabelB);
+
+    function wireAverageCheck(slot, avgCheck, slider) {
+      avgCheck.addEventListener('change', () => {
+        slider.disabled = avgCheck.checked;
+        refreshSlot(slot);
+      });
+    }
+    wireAverageCheck('a', avgCheckA, timeSliderA);
+    wireAverageCheck('b', avgCheckB, timeSliderB);
+
+    identitySelect.addEventListener('change', () => {
+      if (state.meta.a) refreshSlot('a', true);
+      if (state.meta.b) refreshSlot('b', true);
+      renderLoadStatus('a');
+      renderLoadStatus('b');
+    });
+
+    document.querySelectorAll('input[name="combineMode"]').forEach(radio => {
+      radio.addEventListener('change', () => renderWaveforms(false));
+    });
+
+    function combineMode() {
+      return document.querySelector('input[name="combineMode"]:checked').value;
+    }
+
+    function labelFor(slot) {
+      const w = state.waveform[slot];
+      if (!w) return slot.toUpperCase();
+      return w.isAverage ? `${slot.toUpperCase()} (avg)` : `${slot.toUpperCase()} @ ${formatMMSS(w.ts - state.meta[slot].start_ms)}`;
+    }
+
+    function renderWaveforms(resetView) {
+      const el = document.getElementById('waveformChart');
+      const wa = state.waveform.a, wb = state.waveform.b;
+      const traces = [];
+
+      if (wa) traces.push({ x: state.axis.a, y: wa.z, name: labelFor('a'), xaxis: 'x', yaxis: 'y', line: { color: COLOR_A } });
+      if (wb) traces.push({ x: state.axis.b, y: wb.z, name: labelFor('b'), xaxis: 'x', yaxis: 'y', line: { color: COLOR_B } });
+
+      if (wa && wb) {
+        const n = Math.min(wa.z.length, wb.z.length);
+        const mode = combineMode();
+        const combined = [];
+        for (let i = 0; i < n; i++) {
+          if (mode === 'ratio') {
+            combined.push(Math.abs(wb.z[i]) < 1e-9 ? null : wa.z[i] / wb.z[i]);
+          } else {
+            combined.push(wa.z[i] - wb.z[i]);
+          }
+        }
+        traces.push({
+          x: (state.axis.a.length ? state.axis.a : state.axis.b).slice(0, n),
+          y: combined, xaxis: 'x2', yaxis: 'y2',
+          name: mode === 'ratio' ? 'A / B' : 'A - B',
+          line: { color: '#81c784' },
+        });
+      }
+
+      const axisLabel = (state.meta.a && state.meta.a.axis_labels[identitySelect.value])
+        || (state.meta.b && state.meta.b.axis_labels[identitySelect.value]) || 'Bin';
+
+      const layout = {
+        height: 672,
+        margin: { l: 70, r: 20, t: 30, b: 40 },
+        paper_bgcolor: '#1a1a1a',
+        plot_bgcolor: '#1a1a1a',
+        font: { color: '#e0e0e0' },
+        showlegend: true,
+        legend: { orientation: 'h' },
+        // Plotly.react() only preserves interactive zoom/pan across updates
+        // when uirevision stays the same between calls -- without it, react()
+        // resets the view on new data exactly like newPlot() would, which is
+        // why zoom wasn't surviving a slider drag. A constant value here
+        // means "same session, preserve zoom"; the newPlot() branch below
+        // (identity change / new file load) still forces a real reset
+        // regardless, since newPlot ignores uirevision entirely.
+        uirevision: 'compare-waveform',
+        // Canonical axis ids throughout ('x'/'y' for the first subplot, not
+        // 'x1'/'y1') -- mixing the numbered alias with layout keys that
+        // don't carry the same suffix (layout.xaxis, not layout.xaxis1) is
+        // the likely reason gridlines/titles were disappearing on re-render.
+        xaxis: { domain: [0, 1], anchor: 'y', title: axisLabel, gridcolor: '#333' },
+        yaxis: { domain: [0.55, 1], anchor: 'x', title: 'Signal', gridcolor: '#333' },
+        // matches links x-zoom between the two waveform subplots -- this is
+        // plain scatter data (not heatmap), where `matches` has behaved
+        // reliably in the sibling viewer page.
+        xaxis2: { domain: [0, 1], anchor: 'y2', matches: 'x', title: axisLabel, gridcolor: '#333' },
+        yaxis2: { domain: [0, 0.45], anchor: 'x2', title: combineMode() === 'ratio' ? 'A / B' : 'A - B', gridcolor: '#333' },
+      };
+
+      // newPlot on a real reset (new file loaded, or identity changed --
+      // both can change the axis scale entirely, so any existing zoom would
+      // otherwise squash the new data into a sliver, same failure mode as
+      // the heatmap x-axis bug on the sibling viewer page). react()
+      // otherwise, since it preserves the user's current zoom/pan across
+      // updates -- exactly what's wanted when just scrubbing a slider,
+      // toggling Average, or switching Ratio/Difference.
+      if (resetView) {
+        Plotly.newPlot(el, traces, layout, { displayModeBar: true, responsive: false });
+      } else {
+        Plotly.react(el, traces, layout, { displayModeBar: true, responsive: false });
+      }
+    }
+  </script>
+</body>
+</html>

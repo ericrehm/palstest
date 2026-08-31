@@ -61,9 +61,9 @@ class PMTCal:
         resp_mA_per_W, _ = self.resp_model(wavelength_nm)
 
         if supply_multiplier is not None:
-            gain, _ = self.gain_model(control_voltage_V * supply_multiplier)
+            gain, _ = self.gain_model(control_voltage_V * supply_multiplier, extrapolate=True)
         else:
-            gain, _ = self.gain_model(control_voltage_V)
+            gain, _ = self.gain_model(control_voltage_V, extrapolate=True)
         G = self.resistance_ohms * (resp_mA_per_W / 1000.0) * gain
         G = max(G, 1e-24)
         # print(f"Gain G = {G:.3e}")

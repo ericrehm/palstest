@@ -19,7 +19,7 @@ GROUP_RAMAN_PAIR = "raman_pair"
 
 
 def default_data_path() -> Path:
-    return Path(__file__).resolve().parent / "testdata" / "Test1_Hotel_12.csv"
+    return Path(__file__).resolve().parent.parent / "testdata" / "Test1_Hotel_12.csv"
 
 
 def _parse_scalar(value: str) -> Any:

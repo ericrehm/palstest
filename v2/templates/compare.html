@@ -395,9 +395,15 @@
         const n = Math.min(wa.z.length, wb.z.length);
         const mode = combineMode();
         const combined = [];
+        // Only an exact 0/0 or x/0 (non-finite result) is invalid -- matches
+        // L1CrossProcessor's own convention. An absolute epsilon (e.g.
+        // "treat anything under 1e-9 as zero") is wrong: L1's gain-normalized
+        // signal values can legitimately be ~1e-11 for an entire file, which
+        // would null out every bin rather than just the genuine 0/0 cases.
         for (let i = 0; i < n; i++) {
           if (mode === 'ratio') {
-            combined.push(Math.abs(wb.z[i]) < 1e-9 ? null : wa.z[i] / wb.z[i]);
+            const ratio = wa.z[i] / wb.z[i];
+            combined.push(Number.isFinite(ratio) ? ratio : null);
           } else {
             combined.push(wa.z[i] - wb.z[i]);
           }

@@ -163,7 +163,9 @@
     function computeExistingCounts() {
       existingCounts = { l0b: 0, l1: 0, l2: 0, l3: 0 };
       for (const fileEntry of getSelectedFiles()) {
-        const stem = fileEntry.name.replace(/\.csv$/i, '');
+        // Same trailing-sequence-suffix strip as the submit handler, so this
+        // looks for the same (corrected) output filenames it actually writes.
+        const stem = fileEntry.name.replace(/\.csv$/i, '').replace(/_(\d+)$/, '');
         const stemPattern = escapeRegExp(stem);
         for (const stage of STAGES) {
           const tag = stage.key === 'l0b' ? 'L0b' : stage.key.toUpperCase();
@@ -368,7 +370,13 @@
 
       for (const fileEntry of filesToProcess) {
         try {
-          const stem = fileEntry.name.replace(/\.csv$/i, '');
+          // Strip the instrument's own trailing "_N" sequence suffix (same
+          // convention as the server's _SEQUENCE_SUFFIX_RE) before building
+          // output filenames -- otherwise "foo_3.csv" -> "foo_3_L1_3.csv"
+          // duplicates the instance number instead of "foo_L1_3.csv". The
+          // "pesky" no-suffix first file in a sequence has nothing to strip,
+          // which is why only *this* naming was correct before the fix.
+          const stem = fileEntry.name.replace(/\.csv$/i, '').replace(/_(\d+)$/, '');
           let currentBlob = null;
           let currentInputStage = null;
           let anyProduced = false;

@@ -312,8 +312,18 @@ def compare_average():
 
 @app.route("/api/config")
 def get_config():
-    """Return current instrument configuration"""
-    return jsonify(INSTRUMENT_CONFIG), 200
+    """
+    Return the config file's own raw JSON content, not INSTRUMENT_CONFIG --
+    that's been run through load_config(), which resolves responsivity_file/
+    gain_file to absolute local-machine paths and wraps each channel's
+    original block in a nested "raw" key (see ChannelConfig.raw). Correct for
+    the processing code that actually needs those, but exactly the "munged"
+    version a user asking to see the config file does not want.
+    """
+    if not CONFIG_FILE.exists():
+        return jsonify(INSTRUMENT_CONFIG), 200
+    with open(CONFIG_FILE, 'r') as f:
+        return jsonify(json.load(f)), 200
 
 
 @app.route("/api/export/<level>/<channel>", methods=["GET"])

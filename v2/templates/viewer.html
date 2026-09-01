@@ -64,6 +64,12 @@
         <input type="range" id="timeSlider" min="0" max="0" value="0" step="1" disabled>
       </div>
 
+      <div class="viewer-row">
+        <label>Bottom waveform</label>
+        <label style="font-weight:normal;"><input type="radio" name="combineMode" value="ratio" checked> Ratio (Top / Bottom)</label>
+        <label style="font-weight:normal;"><input type="radio" name="combineMode" value="difference"> Difference (Top - Bottom)</label>
+      </div>
+
       <div id="heatmapChart"></div>
       <div id="waveformChart" style="margin-top: 16px;"></div>
     </div>
@@ -196,6 +202,16 @@
 
     identityLSelect.addEventListener('change', () => { clickedAnchor = null; refreshWindowSafe(); });
     identityRSelect.addEventListener('change', () => { clickedAnchor = null; refreshWindowSafe(); });
+
+    function combineMode() {
+      return document.querySelector('input[name="combineMode"]:checked').value;
+    }
+    // windowCache already holds the current windows, so this refetch is a
+    // cache hit -- cheap, and reuses the same rendering path rather than
+    // tracking a separate copy of "last rendered" state just for this.
+    document.querySelectorAll('input[name="combineMode"]').forEach(radio => {
+      radio.addEventListener('change', refreshWindowSafe);
+    });
 
     timeSlider.addEventListener('input', () => {
       sliderStartSec = Number(timeSlider.value);
@@ -444,6 +460,20 @@
       return win.z.map(row => row[idx]);
     }
 
+    // 2nd-98th percentile of the finite values, with 10% padding -- robust
+    // to the occasional huge outlier a near-zero-crossing denominator
+    // produces, unlike Plotly's default min/max-based autorange.
+    function robustRange(values) {
+      const finite = values.filter(v => v != null && Number.isFinite(v)).slice().sort((a, b) => a - b);
+      if (!finite.length) return undefined;
+      const lo = finite[Math.floor(finite.length * 0.02)];
+      const hiIdx = Math.min(finite.length - 1, Math.ceil(finite.length * 0.98) - 1);
+      const hi = finite[Math.max(hiIdx, 0)];
+      if (lo === hi) return [lo - 1, hi + 1];
+      const pad = (hi - lo) * 0.1;
+      return [lo - pad, hi + pad];
+    }
+
     function renderWaveforms(identityL, identityR, winL, winR, anchor) {
       const el = document.getElementById('waveformChart');
       const axisL = meta.axes[identityL] || [];
@@ -466,17 +496,40 @@
       if (colL) traces.push({ x: axisL, y: colL, name: identityL, xaxis: 'x2', yaxis: 'y3', line: { color: '#4fc3f7' } });
       if (colR) traces.push({ x: axisR, y: colR, name: identityR, xaxis: 'x2', yaxis: 'y3', line: { color: '#ffb74d' } });
 
+      let quotientRange;
+      const mode = combineMode();
+      const combinedName = mode === 'ratio' ? `${identityL} / ${identityR}` : `${identityL} - ${identityR}`;
       if (colL && colR) {
         const n = Math.min(colL.length, colR.length);
-        const quotient = [];
+        const combined = [];
         for (let i = 0; i < n; i++) {
-          const denom = colR[i];
-          quotient.push(Math.abs(denom) < 1e-9 ? null : colL[i] / denom);
+          if (mode === 'ratio') {
+            // Only an exact 0/0 or x/0 (non-finite result) is invalid --
+            // matches L1CrossProcessor's own convention. An absolute epsilon
+            // here (e.g. "treat anything under 1e-9 as zero") is wrong: L1's
+            // gain-normalized signal values can legitimately be ~1e-11 for an
+            // entire file, which would null out every bin and make the trace
+            // look blank, not just outlier-y -- exactly what happened before
+            // this fix.
+            const ratio = colL[i] / colR[i];
+            combined.push(Number.isFinite(ratio) ? ratio : null);
+          } else {
+            combined.push(colL[i] - colR[i]);
+          }
         }
         traces.push({
-          x: axisL.slice(0, n), y: quotient, xaxis: 'x3', yaxis: 'y4',
-          name: `${identityL} / ${identityR}`, line: { color: '#81c784' },
+          x: axisL.slice(0, n), y: combined, xaxis: 'x3', yaxis: 'y4',
+          name: combinedName, line: { color: '#81c784' },
         });
+        // L1CrossProcessor's own convention treats a near-zero (but nonzero)
+        // denominator as a legitimately huge ratio, not an error -- so for
+        // background-subtracted L1 data (hovering near zero almost
+        // everywhere except one real peak), the ratio can swing to enormous
+        // outliers at those crossings. Plotly's default y-axis autorange
+        // would stretch to fit them, flattening the rest of the real curve
+        // into an invisible line -- so use a percentile-based range instead
+        // of raw min/max. Harmless to apply to difference mode too.
+        quotientRange = robustRange(combined);
       }
 
       const layout = {
@@ -495,7 +548,7 @@
           domain: [0, 1], anchor: 'y4', matches: 'x2', gridcolor: '#333',
           title: meta.axis_labels[identityL] || 'Bin',
         },
-        yaxis4: { domain: [0, 0.45], title: `${identityL} / ${identityR}`, gridcolor: '#333' },
+        yaxis4: { domain: [0, 0.45], title: combinedName, gridcolor: '#333', range: quotientRange },
         annotations: [{
           text: `t = ${formatMMSS(relMs(anchor.ts))}`, xref: 'paper', yref: 'paper',
           x: 1, y: 1.06, showarrow: false, font: { color: '#999', size: 11 },

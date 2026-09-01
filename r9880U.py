@@ -24,7 +24,7 @@ class R9880UResponsivity:
         Name of the wavelength column in the CSV (nm).
         Default is 'wavelength_nm'.
     responsivity_col : str, optional
-        Name of the responsivity column in the CSV (mA/W).
+        Name of the responsivity column in the CSV (A/W).
         These should be *linear* values, not log10.
         Default is 'responsivity_mA_per_W'.
     rel_digitization_sigma : float, optional
@@ -177,9 +177,9 @@ class R9880UResponsivity:
         Returns
         -------
         resp : float or np.ndarray
-            Interpolated responsivity in mA/W.
+            Interpolated responsivity in A/W.
         sigma : float or np.ndarray
-            Estimated 1-sigma uncertainty in mA/W.
+            Estimated 1-sigma uncertainty in A/W.
 
         Uncertainty model
         -----------------
@@ -211,7 +211,7 @@ class R9880UResponsivity:
             left=np.nan,
             right=np.nan
         )
-        resp_interp = np.exp(log_resp_interp)
+        resp_interp = np.exp(log_resp_interp) / 1000.0  # Convert mA/W to A/W
 
         # Relative uncertainty model
         frac = self._fractional_distance_to_nearest_points(wl_query)

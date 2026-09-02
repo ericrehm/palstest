@@ -53,7 +53,7 @@ class L1Processor:
             pre_trigger_bins if pre_trigger_bins is not None
             else self.processing_defaults.background_pre_trigger_bins
         )
-        self._range_axis_cache: Dict[Tuple[str, int], np.ndarray] = {}
+        self._range_axis_cache: Dict[Tuple[str, int, float], np.ndarray] = {}
 
         # Build PMT responsivity/gain models once per channel (not per shot).
         # In "datasheet" mode, channels sharing the same digitized CSV share
@@ -88,7 +88,7 @@ class L1Processor:
             self._datasheet_cache[key] = model_cls.from_datasheet(csv_path)
         return self._datasheet_cache[key]  # type: ignore[return-value]
 
-    def process(self, l0b: L0bData, e_ref: float) -> L1Data:
+    def process(self, l0b: L0bData, e_ref: float, t0_ns: Optional[float] = None) -> L1Data:
         """
         Apply L1 corrections to one L0b shot.
 
@@ -98,6 +98,12 @@ class L1Processor:
                 all shots in the file (eqn 5's E_ref). Computed once per file
                 by the caller and threaded through, since it isn't derivable
                 from a single shot alone.
+            t0_ns: Eqn 1's t0, overriding l1_constants.t0_ns from config. Like
+                e_ref, this is a per-file quantity -- see detect_t0_ns() --
+                computed once by the caller from the file's raman_near shot
+                and threaded through every shot's process() call, since t0 is
+                an instrument-wide timing constant, not per-channel (that's
+                tau_j) or per-shot. None (the default) uses the config value.
 
         Returns:
             L1Data with S-hat signal, range_m, background uncertainty, and
@@ -157,7 +163,7 @@ class L1Processor:
             s_tilde = s_bgv * ratio * e_ref_scale
             signal_tilde[channel_id] = s_tilde
 
-            # Eqn. 6 Fixed-gain normalization
+            # Eqn. 6 Fixed-gain normalization: PMT, ADC, and optical elements
             wavelength_nm = self.channels[channel_id].wavelength_nm
             g_adc = 10 ** (self.processing_defaults.g_adc_db / 20.0)
             ohms = self.channels[channel_id].resistance_ohms    # i_a is the anode current in amperes
@@ -177,6 +183,8 @@ class L1Processor:
                     f"CSV for it in PALS_SBS312.json, or switch pmt_model_source "
                     f"to 'instance'."
                 )
+
+            # Compute the laser power in W (typ, 0 - 70 uW using data sheet PMT info)
             g_pmt, sigma_g_pmt = gain_model(hv_v)
             R_pmt, sigma_R_pmt = resp_model(wavelength_nm)
             nd_filter_od = self.channels[channel_id].ND_filter_OD or 0
@@ -184,7 +192,7 @@ class L1Processor:
             s_hat = s_tilde / (g_adc * g_pmt * R_pmt * ohms * a_nd)
 
             signal[channel_id] = s_hat
-            range_m[channel_id] = self._range_axis(channel_id, n_bins)
+            range_m[channel_id] = self._range_axis(channel_id, n_bins, t0_ns)
             uncertainty_background[channel_id] = np.full(n_bins, sigma_b_j)
             uncertainty_random[channel_id] = np.zeros(n_bins)  # not yet characterized
             uncertainty_energy[channel_id] = np.zeros(n_bins)  # not yet characterized
@@ -284,18 +292,21 @@ class L1Processor:
         raw_v = pmt_gain_by_index.get(gain_index)
         return abs(raw_v) if raw_v is not None else None
 
-    def _range_axis(self, channel_id: str, n_bins: int) -> np.ndarray:
+    def _range_axis(self, channel_id: str, n_bins: int, t0_ns: Optional[float] = None) -> np.ndarray:
         """Eqn 1: r_i = c0 * (t_i - t0 - tau_j) / (2 * n_w), t_i = i / fs.
         Negative r_i is expected for bins captured before the pulse exits the
-        instrument window. Fixed per (channel, n_bins) until config changes,
-        so cached rather than recomputed per shot.
+        instrument window. Fixed per (channel, n_bins, t0_ns) until config
+        changes, so cached rather than recomputed per shot -- t0_ns is part
+        of the cache key (not just channel/n_bins) since a shared processor
+        instance may see different detected t0_ns across different files.
         """
-        key = (channel_id, n_bins)
+        effective_t0_ns = self.l1_constants.t0_ns if t0_ns is None else t0_ns
+        key = (channel_id, n_bins, effective_t0_ns)
         if key not in self._range_axis_cache:
             c0 = self.l1_constants.c0_m_per_s
             n_w = self.l1_constants.n_w
             fs = self.l1_constants.fs_hz
-            t0_s = self.l1_constants.t0_ns * 1e-9
+            t0_s = effective_t0_ns * 1e-9
             tau_j_s = self.tau_j_ns.get(channel_id, 0.0) * 1e-9
 
             i = np.arange(n_bins)
@@ -303,6 +314,25 @@ class L1Processor:
             self._range_axis_cache[key] = c0 * (t_i - t0_s - tau_j_s) / (2.0 * n_w)
 
         return self._range_axis_cache[key]
+
+    def detect_t0_ns(self, raman_near_counts: np.ndarray) -> float:
+        """Interim stand-in for a future PALS_SBS312.json config value:
+        t0_ns can currently only be one of two values, distinguished by
+        whether a raman_near shot's bin 99 is still above the noise floor.
+
+        > 30 counts at bin 99 means the pulse hasn't decayed away yet, i.e.
+        the digitizer wasn't given 100 samples of pre-trigger padding, so
+        t0_ns = 0. Otherwise, t0_ns = (100 / fs) * 1e9 -- the time those 100
+        pre-trigger samples represent.
+        """
+        if len(raman_near_counts) <= 99:
+            raise ValueError(
+                f"raman_near waveform has {len(raman_near_counts)} bins; need at least "
+                "100 (bin index 99) to detect t0_ns"
+            )
+        if raman_near_counts[99] > 30:
+            return 0.0
+        return (100.0 / self.l1_constants.fs_hz) * 1e9
 
     def _check_saturation(self, adc_array: np.ndarray, channel_id: str) -> np.ndarray:
         """Flag samples at or above the channel's ADC full-scale code."""

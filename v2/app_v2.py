@@ -494,7 +494,18 @@ def process_file():
                 l1_proc = L1Processor(
                     INSTRUMENT_CONFIG, pmt_model_source=pmt_model_source, pre_trigger_bins=pre_trigger_bins
                 )
-            l1_shots = [l1_proc.process(shot, e_ref) for shot in l0b_shots]
+
+            # Eqn 1's t0_ns: detected from this file's raman_near shot (see
+            # L1Processor.detect_t0_ns) until it lives in PALS_SBS312.json.
+            # None (no raman_near shot in this file) falls back to config.
+            raman_near_shot = next(
+                (s for s in l0b_shots if s.l0.metadata.get('identity') == 'raman_near'), None
+            )
+            t0_ns = (
+                l1_proc.detect_t0_ns(raman_near_shot.l0.adc_counts['raman_near'])
+                if raman_near_shot is not None else None
+            )
+            l1_shots = [l1_proc.process(shot, e_ref, t0_ns) for shot in l0b_shots]
 
             # Cross-channel diagnostics (section 6.3: Q_ER, depolarization)
             # need two different channels' shots at once, which L1Processor

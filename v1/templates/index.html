@@ -463,10 +463,16 @@ function renderAttitudeSeries(payload) {
       y: 1.14,
       x: 0,
       font: { color: '#d7dee5' }
-    }
+    },
+    // Matching uirevision per waveform tab (not the payload/timestamp) so
+    // Plotly.react preserves the user's zoom/pan across heatmap clicks that
+    // stay on this tab, while switching tabs (different uirevision) still
+    // resets the view -- a stale zoom range from a different tab's axes
+    // wouldn't make sense here anyway.
+    uirevision: 'attitude',
   };
 
-  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+  Plotly.react('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
 
   const table = document.getElementById('waveformTable');
   const points = x.length;
@@ -539,10 +545,11 @@ function renderLaserTempSeries(payload) {
       y: 1.14,
       x: 0,
       font: { color: '#d7dee5' }
-    }
+    },
+    uirevision: 'laserTemp',
   };
 
-  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+  Plotly.react('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
 
   const table = document.getElementById('waveformTable');
   const points = x.length;
@@ -809,10 +816,11 @@ function renderPowerSeries(payload) {
       y: 1.14,
       x: 0,
       font: { color: '#d7dee5' }
-    }
+    },
+    uirevision: 'power',
   };
 
-  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+  Plotly.react('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
   buildPowerTable(payload);
 }
 
@@ -1308,11 +1316,6 @@ function renderFilteredWaveforms(payload) {
     hovertemplate: `${w.identity}<br>Bin: %{x}<br>Value: %{y}<extra></extra>`
   }));
 
-  const chartEl = document.getElementById('waveformChart');
-  if (chartEl && chartEl.data) {
-    Plotly.purge(chartEl);
-  }
-
   const layout = {
     height: 660,
     margin: { l: 64, r: 28, t: 24, b: 62 },
@@ -1336,10 +1339,11 @@ function renderFilteredWaveforms(payload) {
       y: 1.14,
       x: 0,
       font: { color: '#d7dee5' }
-    }
+    },
+    uirevision: 'filtered',
   };
 
-  Plotly.newPlot('waveformChart', traces, layout, { displayModeBar: true, responsive: true });
+  Plotly.react('waveformChart', traces, layout, { displayModeBar: true, responsive: true });
 
   const table = document.getElementById('waveformTable');
   table.innerHTML = waveforms.map((w) => (
@@ -1392,11 +1396,6 @@ function renderResidualsWaveforms(payload) {
     };
   });
 
-  const chartEl = document.getElementById('waveformChart');
-  if (chartEl && chartEl.data) {
-    Plotly.purge(chartEl);
-  }
-
   const layout = {
     height: 660,
     margin: { l: 64, r: 28, t: 24, b: 62 },
@@ -1422,10 +1421,11 @@ function renderResidualsWaveforms(payload) {
       y: 1.14,
       x: 0,
       font: { color: '#d7dee5' }
-    }
+    },
+    uirevision: 'residuals',
   };
 
-  Plotly.newPlot('waveformChart', traces, layout, { displayModeBar: true, responsive: true });
+  Plotly.react('waveformChart', traces, layout, { displayModeBar: true, responsive: true });
 
   const table = document.getElementById('waveformTable');
   table.innerHTML = rawWaveforms.map((w) => (
@@ -1452,11 +1452,6 @@ function renderRawWaveforms(payload) {
     hovertemplate: `${w.identity}<br>Bin: %{x}<br>Value: %{y}<extra></extra>`
   }));
 
-  const chartEl = document.getElementById('waveformChart');
-  if (chartEl && chartEl.data) {
-    Plotly.purge(chartEl);
-  }
-
   const layout = {
     height: 660,
     margin: { l: 64, r: 28, t: 24, b: 62 },
@@ -1479,10 +1474,11 @@ function renderRawWaveforms(payload) {
       y: 1.14,
       x: 0,
       font: { color: '#d7dee5' }
-    }
+    },
+    uirevision: 'raw',
   };
 
-  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+  Plotly.react('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
 
   const table = document.getElementById('waveformTable');
   table.innerHTML = payload.waveforms.map((w) => (
@@ -1576,15 +1572,11 @@ function renderDepolWaveforms(payload) {
       y: 1.14,
       x: 0,
       font: { color: '#d7dee5' }
-    }
+    },
+    uirevision: 'depol',
   };
 
-  const chartEl = document.getElementById('waveformChart');
-  if (chartEl && chartEl.data) {
-    Plotly.purge(chartEl);
-  }
-
-  Plotly.newPlot('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
+  Plotly.react('waveformChart', traces, layout, {displayModeBar: true, responsive: true});
 
   const table = document.getElementById('waveformTable');
   table.innerHTML = payload.waveforms.map((w) => (

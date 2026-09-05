@@ -130,4 +130,4 @@ def cast():
 if __name__ == "__main__":
     # 5025 (v2) and 5050 (v1) are already claimed; 5000 is macOS AirPlay
     # Receiver (see v2/app_v2.py's note) -- 5040 avoids all three.
-    app.run(debug=True, port=5040)
+    app.run(debug=True, port=5051)

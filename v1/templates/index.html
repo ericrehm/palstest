@@ -138,7 +138,7 @@
     </section>
 
     <section class="card">
-      <h2>Klatt Slope Analysis</h2>
+      <h2>Collis Slope Analysis</h2>
       <div class="analysis-container">
         <!-- Sliders row -->
         <div class="analysis-sliders-row">
@@ -353,6 +353,17 @@ function updateMetaBox(meta) {
     `Identities: ${meta.identities.join(', ')}`,
   ];
   box.innerHTML = lines.map((l) => `<div>${l}</div>`).join('');
+
+  // A file with no header/data (or a format mismatch) is skipped rather
+  // than failing the whole batch (see PalsData.from_uploaded_files/_load),
+  // so surface which ones and why -- otherwise a skipped file is silently
+  // invisible and its absence from the plots looks like missing data
+  // rather than a load-time problem.
+  const skipped = meta.skipped_files || [];
+  if (skipped.length) {
+    const skippedLines = skipped.map((s) => `<div>⚠️ Skipped ${s.file}: ${s.error}</div>`);
+    box.innerHTML += `<div style="color:#ff6666; margin-top:6px;">${skippedLines.join('')}</div>`;
+  }
 }
 
 function clearPlots() {
@@ -1710,7 +1721,7 @@ function computeLinearRegression(x, y) {
   return { slope, intercept, r2 };
 }
 
-function computeKlattFit(xBins, yValues, rangeStart, rangeEnd) {
+function computeCollisFit(xBins, yValues, rangeStart, rangeEnd) {
   // Extract data points within range, compute log-linear fit
   if (!xBins || !yValues || xBins.length !== yValues.length) {
     return null;
@@ -1739,7 +1750,7 @@ function computeKlattFit(xBins, yValues, rangeStart, rangeEnd) {
     return null;
   }
   
-  // Klatt method: slope is ln(backscatter), Kd = -slope / 2
+  // Collis method: slope is ln(backscatter), Kd = -slope / 2
   const kd = -fit.slope / 2;
   
   return {
@@ -1784,12 +1795,12 @@ function updateAnalysisResults() {
   crossFar = applyND1CorrectionToWaveform(crossFar, 'cross_far');
   
   // Compute fits for NEAR FIELD
-  const coNearFit = computeKlattFit(bins, coNear, state.analysisNearStart, state.analysisNearEnd);
-  const crossNearFit = computeKlattFit(bins, crossNear, state.analysisNearStart, state.analysisNearEnd);
+  const coNearFit = computeCollisFit(bins, coNear, state.analysisNearStart, state.analysisNearEnd);
+  const crossNearFit = computeCollisFit(bins, crossNear, state.analysisNearStart, state.analysisNearEnd);
   
   // Compute fits for FAR FIELD
-  const coFarFit = computeKlattFit(bins, coFar, state.analysisFarStart, state.analysisFarEnd);
-  const crossFarFit = computeKlattFit(bins, crossFar, state.analysisFarStart, state.analysisFarEnd);
+  const coFarFit = computeCollisFit(bins, coFar, state.analysisFarStart, state.analysisFarEnd);
+  const crossFarFit = computeCollisFit(bins, crossFar, state.analysisFarStart, state.analysisFarEnd);
   
   // Update UI
   const fmt = (val) => (Number.isFinite(val) ? val.toFixed(4) : '-');

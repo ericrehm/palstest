@@ -99,7 +99,11 @@ def load_path() -> tuple:
     return jsonify(
         {
             "ok": True,
-            "loaded_files": [str(path) for path in csv_files],
+            # data_store.loaded_files, not [str(path) for path in csv_files]
+            # -- a file with no header/data is skipped rather than failing
+            # the whole batch (see PalsData._load), so this must reflect
+            # what actually loaded, not everything discovered on disk.
+            "loaded_files": data_store.loaded_files,
             "metadata": data_store.get_metadata_payload(),
         }
     )
@@ -122,7 +126,11 @@ def load_files() -> tuple:
     return jsonify(
         {
             "ok": True,
-            "loaded_files": [f.filename for f in valid_files],
+            # data_store.loaded_files, not [f.filename for f in valid_files]
+            # -- a file with no header/data is skipped rather than failing
+            # the whole batch (see PalsData.from_uploaded_files), so this
+            # must reflect what actually loaded, not everything uploaded.
+            "loaded_files": data_store.loaded_files,
             "metadata": data_store.get_metadata_payload(),
         }
     )

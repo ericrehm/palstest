@@ -115,6 +115,7 @@ class PalsData:
 
         self.csv_path = self.csv_paths[0]
         self.loaded_files: list[str] = []
+        self.skipped_files: list[dict[str, str]] = []
         self.metadata_by_file: dict[str, dict[str, Any]] = {}
         self.metadata: dict[str, Any] = {}
         self.header: list[str] = []
@@ -133,6 +134,7 @@ class PalsData:
         instance.csv_paths = []
         instance.csv_path = Path("uploaded")
         instance.loaded_files = []
+        instance.skipped_files = []
         instance.metadata_by_file = {}
         instance.metadata = {}
         instance.header = []
@@ -144,11 +146,27 @@ class PalsData:
         instance._timestamps_by_identity = {}
         instance.power_format = "unknown"
 
+        # One bad file (no header/data, a format mismatch, ...) shouldn't
+        # sink an entire multi-file selection -- skip it and keep going, so
+        # a batch of e.g. 20 files with one truncated recording still
+        # renders the other 19 instead of rendering nothing at all.
         for uploaded in uploaded_files:
             name = (getattr(uploaded, "filename", None) or "uploaded.csv").strip() or "uploaded.csv"
             raw = uploaded.read()
             text = raw.decode("utf-8-sig", errors="replace")
-            instance._load_one_stream(io.StringIO(text), name)
+            try:
+                instance._load_one_stream(io.StringIO(text), name)
+            except Exception as exc:  # noqa: BLE001
+                instance.skipped_files.append({"file": name, "error": str(exc)})
+
+        if not instance.loaded_files:
+            # Nothing usable in the whole batch -- surface the specific
+            # reason (the first failure) rather than a generic message,
+            # since with a single bad file (the common case) that's exactly
+            # the answer the caller needs.
+            if instance.skipped_files:
+                raise ValueError(instance.skipped_files[0]["error"])
+            raise ValueError("No files were uploaded")
 
         instance._finalize()
         return instance
@@ -156,10 +174,18 @@ class PalsData:
     def _load(self) -> None:
         for csv_path in self.csv_paths:
             if not csv_path.exists():
-                raise FileNotFoundError(f"Data file not found: {csv_path}")
+                self.skipped_files.append({"file": str(csv_path), "error": f"Data file not found: {csv_path}"})
+                continue
+            try:
+                with csv_path.open("r", newline="") as handle:
+                    self._load_one_stream(handle, csv_path.name)
+            except Exception as exc:  # noqa: BLE001
+                self.skipped_files.append({"file": csv_path.name, "error": str(exc)})
 
-            with csv_path.open("r", newline="") as handle:
-                self._load_one_stream(handle, csv_path.name)
+        if not self.loaded_files:
+            if self.skipped_files:
+                raise ValueError(self.skipped_files[0]["error"])
+            raise ValueError("No files to load")
 
         self._finalize()
 
@@ -279,6 +305,7 @@ class PalsData:
             "file": file_label,
             "files": self.loaded_files,
             "file_count": len(self.loaded_files),
+            "skipped_files": self.skipped_files,
             "metadata": self.metadata,
             "samples_per_pulse": self.samples_per_pulse,
             "total_rows": len(self.rows),

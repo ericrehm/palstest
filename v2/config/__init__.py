@@ -20,6 +20,28 @@ class L1Constants:
 
 
 @dataclass
+class L2Constants:
+    """L2 K_lidar/c_est fitting constants (see L2Processor._fit_k_lidar).
+
+    k_lidar_fit_window_*_m is [r1, r2] in range_m, in meters: near-field
+    window for co_near/cross_near, far-field window for co_far/cross_far.
+    k_lidar_fit_window_raman_*_m is the same, for raman_near/raman_far --
+    a separate pair because the Raman-shifted return (650nm) attenuates on
+    a different slope than the elastic 532nm return the co_/cross_ windows
+    are tuned for. Interim per-instrument values pending a per-deployment
+    calibration process -- same status as l1_constants.t0_ns before it's
+    characterized.
+    """
+    c_water_532: float = 0.0463  # clear-water attenuation coefficient at 532 nm, 1/m
+    c_water_650: float = 0.341   # clear-water attenuation coefficient at 650 nm, 1/m
+    k_lidar_fit_window_nf_m: tuple = (8.0, 12.4)
+    k_lidar_fit_window_ff_m: tuple = (13.5, 17.5)
+    k_lidar_fit_window_raman_nf_m: tuple = (4.0, 6.0)
+    k_lidar_fit_window_raman_ff_m: tuple = (7.0, 10.0)
+    k_lidar_min_fit_points: int = 3
+
+
+@dataclass
 class ProcessingDefaults:
     """L1-L3 processing algorithm defaults"""
     background_mad_scale: float = 1.4826
@@ -39,7 +61,7 @@ class ChannelConfig:
     pmt_gain_index says which "# pmt_gain_N" header line in a shot file holds
     this channel's actual per-run HV setpoint -- that voltage itself is
     operational data recorded per-file, not calibration data, so it is never
-    read from here. See io.pals_io.parse_l0b_shots / _parse_pmt_gain_header.
+    read from here. See io.pals_io.parse_l0b_shots / parse_pmt_gain_header.
     """
     channel_id: str
     pmt_model: str
@@ -83,8 +105,13 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         'channels': {},
         'calibration': data.get('calibration', {}),
         'l1_constants': L1Constants(**data.get('l1_constants', {})),
+        'l2_constants': L2Constants(**data.get('l2_constants', {})),
         'processing': ProcessingDefaults(**data.get('processing_defaults', {})),
         'metadata': data.get('metadata', {}),
+        # Not yet promoted to a typed dataclass (only mounting_depth_m is
+        # consumed by anything right now -- see app_v2.py's L2 route) --
+        # same "raw dict, no schema yet" status as calibration above.
+        'deployment_info': data.get('deployment_info', {}),
     }
 
     for ch_id, ch_data in data.get('channels', {}).items():
@@ -106,4 +133,4 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     return config
 
 
-__all__ = ['load_config', 'ChannelConfig', 'ProcessingDefaults', 'L1Constants']
+__all__ = ['load_config', 'ChannelConfig', 'ProcessingDefaults', 'L1Constants', 'L2Constants']

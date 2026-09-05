@@ -4,7 +4,8 @@
   "deployment_info": {
     "platform": "RV Investigator",
     "location": "Coral Sea",
-    "dates": "2026-08-29 onwards"
+    "dates": "2026-08-29 onwards",
+    "mounting_depth_m": 8
   },
   "channels": {
     "co_near": {
@@ -98,6 +99,15 @@
     "fs_hz": 2500000000,
     "t0_ns": 0.0,
     "e_ref_scale": 1.0
+  },
+  "l2_constants": {
+    "c_water_532": 0.0463,
+    "c_water_650": 0.341,
+    "k_lidar_fit_window_nf_m": [3.6, 8.0],
+    "k_lidar_fit_window_ff_m": [9.1, 13.1],
+    "k_lidar_fit_window_raman_nf_m": [4.0, 6.0],
+    "k_lidar_fit_window_raman_ff_m": [7.0, 10.0],
+    "k_lidar_min_fit_points": 3
   },
   "calibration": {
     "timing_offsets_ns": {

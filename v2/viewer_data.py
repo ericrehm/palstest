@@ -17,7 +17,7 @@ from typing import Dict, List
 import numpy as np
 
 from .io import parse_l1_shots
-from .io.pals_io import KNOWN_IDENTITIES, _parse_pmt_gain_header
+from .io.pals_io import KNOWN_IDENTITIES, parse_pmt_gain_header
 
 
 def _sanitize(arr) -> list:
@@ -178,7 +178,7 @@ def load_raw_or_l0b(lines: List[str], filename: str) -> ViewerFile:
         z = np.array([r[1] for r in rows], dtype=float)
         identities[identity] = ViewerIdentity(timestamps=timestamps, z=z, axis=axis, axis_label="Bin")
 
-    pmt_gain_by_index = _parse_pmt_gain_header(metadata_lines)
+    pmt_gain_by_index = parse_pmt_gain_header(metadata_lines)
     return ViewerFile(file_type="raw", filename=filename, identities=identities, pmt_gain_by_index=pmt_gain_by_index)
 
 
@@ -224,7 +224,7 @@ def load_l1_or_l2(lines: List[str], filename: str) -> ViewerFile:
     # are carried forward into L1/L2 files by write_l1_shots and read back by
     # parse_l1_shots -- same header, same parser, regardless of stage.
     header_lines = shots[0].l0b.l0.metadata.get('header_lines', [])
-    pmt_gain_by_index = _parse_pmt_gain_header(header_lines)
+    pmt_gain_by_index = parse_pmt_gain_header(header_lines)
 
     # file_type is overwritten by the caller (it knows which stage the user
     # said they were loading); 'l1' here is just a harmless default.

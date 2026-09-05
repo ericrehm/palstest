@@ -24,6 +24,7 @@
         <a href="/" class="{{ 'active' if active_tab == 'processing' else '' }}">Processing</a>
         <a href="/viewer" class="{{ 'active' if active_tab == 'viewer1' else '' }}">Browse</a>
         <a href="/compare" class="{{ 'active' if active_tab == 'viewer2' else '' }}">Compare</a>
+        <a href="/scalar" class="{{ 'active' if active_tab == 'scalar' else '' }}">Scalar</a>
       </nav>
     </header>
 
@@ -72,7 +73,27 @@
               <option value="instance">Per-channel (instance-based)</option>
             </select>
             <label for="preTriggerBins" style="display:inline; font-weight:normal; margin-left:16px; margin-right:8px;">Detector SNR: pre-trigger bins (N)</label>
-            <input type="number" id="preTriggerBins" name="preTriggerBins" min="0" placeholder="config default" style="width:110px;" title="0 = don't compute (NaN-filled)">
+            <input type="number" id="preTriggerBins" name="preTriggerBins" min="0" style="width:110px;" title="0 = don't compute (NaN-filled)">
+          </div>
+
+          <div id="l2Options" class="level-options" hidden>
+            <label for="r1nf" style="display:inline; font-weight:normal; margin-right:8px;">L2: K_lidar NF fit window (m)</label>
+            <input type="number" id="r1nf" name="r1nf" step="0.1" style="width:80px;" title="r1nf (near-field window start)">
+            <span style="color:#888;">–</span>
+            <input type="number" id="r2nf" name="r2nf" step="0.1" style="width:80px;" title="r2nf (near-field window end)">
+            <label for="r1ff" style="display:inline; font-weight:normal; margin-left:16px; margin-right:8px;">FF fit window (m)</label>
+            <input type="number" id="r1ff" name="r1ff" step="0.1" style="width:80px;" title="r1ff (far-field window start)">
+            <span style="color:#888;">–</span>
+            <input type="number" id="r2ff" name="r2ff" step="0.1" style="width:80px;" title="r2ff (far-field window end)">
+            <br>
+            <label for="r1RamanNf" style="display:inline; font-weight:normal; margin-right:8px;">Raman NF fit window (m)</label>
+            <input type="number" id="r1RamanNf" name="r1RamanNf" step="0.1" style="width:80px;" title="raman_near window start">
+            <span style="color:#888;">–</span>
+            <input type="number" id="r2RamanNf" name="r2RamanNf" step="0.1" style="width:80px;" title="raman_near window end">
+            <label for="r1RamanFf" style="display:inline; font-weight:normal; margin-left:16px; margin-right:8px;">Raman FF fit window (m)</label>
+            <input type="number" id="r1RamanFf" name="r1RamanFf" step="0.1" style="width:80px;" title="raman_far window start">
+            <span style="color:#888;">–</span>
+            <input type="number" id="r2RamanFf" name="r2RamanFf" step="0.1" style="width:80px;" title="raman_far window end">
           </div>
         </div>
 
@@ -235,15 +256,55 @@
       const anyChecked = STAGES.some(s => checkboxFor(s.key).checked);
       document.getElementById('processBtn').disabled = (total === 0) || !anyChecked;
 
-      // Show L1's options only when L1 is actually selectable and selected
+      // Show L1's/L2's options only when that stage is actually selectable and selected
       const l1Cb = checkboxFor('l1');
       document.getElementById('l1Options').hidden = !(l1Cb.checked && !l1Cb.disabled);
+      const l2Cb = checkboxFor('l2');
+      document.getElementById('l2Options').hidden = !(l2Cb.checked && !l2Cb.disabled);
     }
 
     STAGES.forEach(stage => {
       checkboxFor(stage.key).addEventListener('change', updateStageStates);
     });
     updateStageStates(); // initial state: no directory picked yet, so all disabled
+
+    // Pre-fill L1's/L2's option fields with the config file's own current
+    // defaults (not a vague "config default" placeholder) -- an empty field
+    // still means "use the config default" server-side, but showing the
+    // actual number here is what lets the user see it before deciding
+    // whether to override it.
+    (async () => {
+      try {
+        const response = await fetch(`${API_BASE}/config`);
+        const data = await response.json();
+        const preTrigger = data.processing_defaults?.background_pre_trigger_bins;
+        if (preTrigger !== undefined) {
+          document.getElementById('preTriggerBins').value = preTrigger;
+        }
+        const nfWindow = data.l2_constants?.k_lidar_fit_window_nf_m;
+        if (Array.isArray(nfWindow)) {
+          document.getElementById('r1nf').value = nfWindow[0];
+          document.getElementById('r2nf').value = nfWindow[1];
+        }
+        const ffWindow = data.l2_constants?.k_lidar_fit_window_ff_m;
+        if (Array.isArray(ffWindow)) {
+          document.getElementById('r1ff').value = ffWindow[0];
+          document.getElementById('r2ff').value = ffWindow[1];
+        }
+        const ramanNfWindow = data.l2_constants?.k_lidar_fit_window_raman_nf_m;
+        if (Array.isArray(ramanNfWindow)) {
+          document.getElementById('r1RamanNf').value = ramanNfWindow[0];
+          document.getElementById('r2RamanNf').value = ramanNfWindow[1];
+        }
+        const ramanFfWindow = data.l2_constants?.k_lidar_fit_window_raman_ff_m;
+        if (Array.isArray(ramanFfWindow)) {
+          document.getElementById('r1RamanFf').value = ramanFfWindow[0];
+          document.getElementById('r2RamanFf').value = ramanFfWindow[1];
+        }
+      } catch (err) {
+        console.warn('Could not pre-fill config defaults:', err);
+      }
+    })();
 
     // Check for File System Access API support
     if (!window.showDirectoryPicker) {
@@ -255,7 +316,16 @@
     document.getElementById('pickDirBtn').addEventListener('click', async (e) => {
       e.preventDefault();
       try {
-        selectedDirHandle = await window.showDirectoryPicker();
+        // 'readwrite' up front, while still inside this click's user
+        // activation -- pipeline outputs are written directly into this
+        // directory (see the Process handler below). Requesting it lazily,
+        // the first time a write actually happens deep in that handler's
+        // await chain, runs into Chrome's "User activation is required to
+        // request permissions" once activation has been consumed/expired
+        // (e.g. partway through a multi-file batch) -- read-only access
+        // from a bare showDirectoryPicker() wouldn't need re-prompting, but
+        // silently produces no output.
+        selectedDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
         await scanDirectory();
 
         // Default to processing every shot file found; the user can narrow this
@@ -376,7 +446,14 @@
           // duplicates the instance number instead of "foo_L1_3.csv". The
           // "pesky" no-suffix first file in a sequence has nothing to strip,
           // which is why only *this* naming was correct before the fix.
-          const stem = fileEntry.name.replace(/\.csv$/i, '').replace(/_(\d+)$/, '');
+          // sequenceId is that same "_N" (implicitly "0" when absent, same
+          // as the server's sequence_id) -- ensureInput below needs it to
+          // pick out THIS file's own sibling, not just any file sharing the
+          // stem.
+          const rawStem = fileEntry.name.replace(/\.csv$/i, '');
+          const seqSuffixMatch = rawStem.match(/_(\d+)$/);
+          const stem = seqSuffixMatch ? rawStem.slice(0, seqSuffixMatch.index) : rawStem;
+          const sequenceId = seqSuffixMatch ? seqSuffixMatch[1] : '0';
           let currentBlob = null;
           let currentInputStage = null;
           let anyProduced = false;
@@ -394,7 +471,17 @@
               return;
             }
             const tag = TAGS[neededStage];
-            const re = new RegExp(`^${escapeRegExp(stem)}_${tag}_\\d+\\.csv$`, 'i');
+            // Pinned to THIS file's own sequenceId, not "\d+" -- a bare
+            // wildcard would match any sequence-numbered sibling sharing the
+            // stem, and dirFileNames.find() returns the first such match
+            // regardless of which one actually belongs to this raw file.
+            // With a batch of files in one sequence, that silently fed every
+            // file the same (first-listed) sibling once its prerequisite
+            // stage was being picked up from disk rather than freshly
+            // produced this run -- e.g. a whole batch of L2 outputs ending
+            // up byte-identical because every one was built from the same
+            // single L1 file.
+            const re = new RegExp(`^${escapeRegExp(stem)}_${tag}_${sequenceId}\\.csv$`, 'i');
             const siblingName = dirFileNames.find(name => re.test(name));
             if (!siblingName) {
               throw new Error(`No existing ${tag} file found for ${fileEntry.name}`);
@@ -419,12 +506,38 @@
             formData.append('originalFilename', fileEntry.name); // always the raw file's name, for output naming
             formData.append('inputStage', currentInputStage);
             formData.append('stage', stage.key);
-            if (selectedDirHandle) {
-              formData.append('sourceDir', selectedDirHandle.name);
+            if (stage.key === 'l0b') {
+              // The PM sibling lives in the same picked directory as the raw
+              // shot file, so fetch it through the same handle rather than
+              // asking the server to locate it on its own filesystem (same
+              // pattern ensureInput uses for L1/L2 sibling lookups above).
+              // Same naming convention as the server's old _SEQUENCE_SUFFIX_RE
+              // derivation: "_PM" goes right before the trailing "_N", or is
+              // appended when there is none (not "_PM_0" -- the first file's
+              // implicit sequenceId of '0' has no suffix at all, unlike every
+              // later file, so this can't just reuse sequenceId uniformly).
+              const pmFilename = seqSuffixMatch ? `${stem}_PM_${sequenceId}.csv` : `${stem}_PM.csv`;
+              try {
+                const pmHandle = await selectedDirHandle.getFileHandle(pmFilename);
+                formData.append('pmFile', await pmHandle.getFile(), pmFilename);
+              } catch (err) {
+                // No PM sibling on disk -- l0b proceeds without PM matching,
+                // same as before.
+              }
             }
             if (stage.key === 'l1') {
               formData.append('pmtModelSource', document.getElementById('pmtModelSource').value);
               formData.append('preTriggerBins', document.getElementById('preTriggerBins').value);
+            }
+            if (stage.key === 'l2') {
+              formData.append('r1nf', document.getElementById('r1nf').value);
+              formData.append('r2nf', document.getElementById('r2nf').value);
+              formData.append('r1ff', document.getElementById('r1ff').value);
+              formData.append('r2ff', document.getElementById('r2ff').value);
+              formData.append('r1RamanNf', document.getElementById('r1RamanNf').value);
+              formData.append('r2RamanNf', document.getElementById('r2RamanNf').value);
+              formData.append('r1RamanFf', document.getElementById('r1RamanFf').value);
+              formData.append('r2RamanFf', document.getElementById('r2RamanFf').value);
             }
 
             const response = await fetch(`${API_BASE}/process-file`, {

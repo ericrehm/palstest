@@ -21,13 +21,19 @@ KNOWN_IDENTITIES = {'co_near', 'cross_near', 'raman_near', 'co_far', 'cross_far'
 _PMT_GAIN_HEADER_RE = re.compile(r'^#\s*pmt_gain_(\d+)\s*:\s*(-?[\d.]+)')
 
 
-def _parse_pmt_gain_header(metadata_lines: List[str]) -> Dict[int, float]:
+def parse_pmt_gain_header(metadata_lines: List[str]) -> Dict[int, float]:
     """Parse '# pmt_gain_N: <value>' header lines into {N: value_volts}.
 
     These are the actual per-run PMT HV/gain setpoints the instrument
     recorded for this file -- operational data, not calibration data, so
     they live in the file header rather than PALS_SBS312.json. Each
     channel's config.pmt_gain_index says which N is its own voltage.
+
+    Public (not just an internal helper of parse_l0b_shots below) because
+    app_v2.py's /api/scalar/load needs the same {N: volts} map to build the
+    per-channel gain diagnostic (see app_v2._pmt_gains_for_channels) --
+    metadata_lines there comes straight from the uploaded file's own '#'
+    lines, same as here.
     """
     pmt_gains: Dict[int, float] = {}
     for line in metadata_lines:
@@ -66,7 +72,7 @@ def parse_l0b_shots(lines: Iterable[str], source_file: str = "") -> List[L0bData
         (c for c in header if c.startswith('Bin_')),
         key=lambda c: int(c.split('_')[1]),
     )
-    pmt_gain_by_index = _parse_pmt_gain_header(metadata_lines)  # file-level, parsed once
+    pmt_gain_by_index = parse_pmt_gain_header(metadata_lines)  # file-level, parsed once
 
     shots: List[L0bData] = []
     reader = csv.DictReader(lines_iter, fieldnames=header)
@@ -325,7 +331,9 @@ def write_l1_shots(l1_shots: List[L1Data], out: TextIO, stage_label: str = "L1")
     """
     Write shots in the same row-per-shot format as L0/L0b ("the Matrix"):
     original metadata comment lines propagated forward, one new
-    '# <stage_label> processed:' line, Bin_ values from shot.signal, Range_
+    '# <stage_label> processed:' line, KLidar/CEst/QAK scalar columns (L2
+    only -- see L2Processor._fit_k_lidar; blank for L1 and for any channel
+    the fit wasn't attempted on), Bin_ values from shot.signal, Range_
     columns appended (eqn 1), and one pair of columns per QA test that ran
     (e.g. QADC_/QADCFLAG_ for eqn 9's ADC occupancy -- see
     QA_COLUMN_PREFIXES and L1Data.qa_values/qa_flags).
@@ -390,7 +398,8 @@ def write_l1_shots(l1_shots: List[L1Data], out: TextIO, stage_label: str = "L1")
 
     fieldnames = [
         'Timestamp', 'Identity', 'Roll', 'Pitch', 'Yaw', 'LaserTempC',
-        'PowerASum', 'PowerBSum',
+        'PowerASum', 'PowerBSum', 'KLidar', 'CEst', 'QAK',
+        'CT532Near', 'CT532Far', 'CT650Near', 'CT650Far',
     ] + bin_cols + range_cols + stilde_cols + qa_cols
 
     for line in header_lines:
@@ -411,6 +420,13 @@ def write_l1_shots(l1_shots: List[L1Data], out: TextIO, stage_label: str = "L1")
             'LaserTempC': l0.metadata.get('laser_temp_c', ''),
             'PowerASum': shot.l0b.power_a_sum,
             'PowerBSum': shot.l0b.power_b_sum,
+            'KLidar': shot.k_lidar if shot.k_lidar is not None else '',
+            'CEst': shot.c_est if shot.c_est is not None else '',
+            'QAK': shot.qak_flag if shot.qak_flag is not None else '',
+            'CT532Near': shot.ct532_near if shot.ct532_near is not None else '',
+            'CT532Far': shot.ct532_far if shot.ct532_far is not None else '',
+            'CT650Near': shot.ct650_near if shot.ct650_near is not None else '',
+            'CT650Far': shot.ct650_far if shot.ct650_far is not None else '',
         }
         row.update(zip(bin_cols, shot.signal[channel_id]))
         row.update(zip(range_cols, shot.range_m[channel_id]))
@@ -577,6 +593,13 @@ def parse_l1_shots(lines: Iterable[str], source_file: str = "") -> List[L1Data]:
             power_b_sum=float(row.get('PowerBSum') or 0),
             pm_source='from_l1_file',
         )
+        k_lidar = row.get('KLidar')
+        c_est = row.get('CEst')
+        qak_flag = row.get('QAK')
+
+        def _opt_float(value):
+            return float(value) if value not in (None, '') else None
+
         shots.append(L1Data(
             l0b=l0b,
             signal={channel_id: signal_arr},
@@ -584,6 +607,13 @@ def parse_l1_shots(lines: Iterable[str], source_file: str = "") -> List[L1Data]:
             range_m={channel_id: range_arr},
             qa_values=qa_values,
             qa_flags=qa_flags,
+            k_lidar=_opt_float(k_lidar),
+            c_est=_opt_float(c_est),
+            qak_flag=int(float(qak_flag)) if qak_flag not in (None, '') else None,
+            ct532_near=_opt_float(row.get('CT532Near')),
+            ct532_far=_opt_float(row.get('CT532Far')),
+            ct650_near=_opt_float(row.get('CT650Near')),
+            ct650_far=_opt_float(row.get('CT650Far')),
         ))
 
     return shots

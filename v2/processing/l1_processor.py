@@ -170,7 +170,7 @@ class L1Processor:
 
             # This shot's actual per-run PMT HV (operational data recorded in
             # the L0b header, not a config/calibration value -- see
-            # config.pmt_gain_index and io.pals_io._parse_pmt_gain_header).
+            # config.pmt_gain_index and io.pals_io.parse_pmt_gain_header).
             hv_v = self._hv_for(channel_id, l0b)
 
             gain_model = self.gain_models[channel_id]

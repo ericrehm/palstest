@@ -139,6 +139,37 @@ class L1Data:
     qa_values: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
     qa_flags: Dict[str, Dict[str, np.ndarray]] = field(default_factory=dict)
 
+    # L2's K_lidar/c_est: per-shot scalars (not per-bin, unlike qa_values/
+    # qa_flags above), so they get their own fields rather than folding into
+    # those dicts. Only set for L2 rows on co_near/cross_near/co_far/cross_far
+    # (see L2Processor._fit_k_lidar) -- None everywhere else, including plain
+    # L1 rows (this dataclass is reused for L2's per-shot output -- see
+    # L2Processor.process/app_v2.py's L2 route). qak_flag is a QartodFlag
+    # int (1/3/4/9); None means "not attempted for this channel" (e.g.
+    # raman_near, or an L1CrossProcessor ratio identity), distinct from 9
+    # ("attempted, couldn't be computed").
+    k_lidar: Optional[float] = None
+    c_est: Optional[float] = None
+    qak_flag: Optional[int] = None
+
+    # In-situ ac-s IOP reference values: total beam attenuation ct(532nm)/
+    # ct(650nm) -- the ac-s's own measured c(lambda) (particulate/CDOM
+    # only, factory-calibrated against pure water) plus c_water_532/
+    # c_water_650 added back, so these compare directly against K_lidar
+    # (also a total-attenuation estimate) rather than c_est (K_lidar with
+    # c_water already subtracted back out). Depth-averaged over the same
+    # window that produced k_lidar/qak_flag above (nf/ff for the elastic
+    # 532nm windows, raman_nf/raman_ff for the Raman-shifted 650nm windows
+    # -- see iop_geo.profiles.OUTPUT_SPECS and app_v2.py's L2 route). Same
+    # "L2-only, everywhere else None" status as k_lidar/c_est. None also
+    # when no ac-s cast is contemporaneous with this shot (see
+    # iop_geo.profiles.MATCH_PAD) or the matched cast has no data in that
+    # depth window -- not just "not yet computed".
+    ct532_near: Optional[float] = None
+    ct532_far: Optional[float] = None
+    ct650_near: Optional[float] = None
+    ct650_far: Optional[float] = None
+
     # Processing metadata
     background_estimate: Dict[str, Tuple[float, float]] = field(default_factory=dict)  # (value, uncertainty) per channel
     processing_notes: str = ""
@@ -184,6 +215,14 @@ class L2Data:
     # channel_id(s). Kept per-shot (not just the ensemble average below) so
     # individual shots can still be inspected/plotted.
     range_corrected: List[Dict[str, np.ndarray]] = field(default_factory=list)
+
+    # Per-shot K_lidar/c_est/QAK, same one-dict-per-shot shape as
+    # range_corrected above (same order/indexing into l1_ensemble), but only
+    # keyed by channels the fit was attempted for (co_near/cross_near/
+    # co_far/cross_far) -- see L2Processor._fit_k_lidar.
+    k_lidar: List[Dict[str, Optional[float]]] = field(default_factory=list)
+    c_est: List[Dict[str, Optional[float]]] = field(default_factory=list)
+    qak_flag: List[Dict[str, int]] = field(default_factory=list)
 
     # Calibrated signals (averaged, range-corrected)
     signal_avg: Dict[str, np.ndarray] = field(default_factory=dict)  # Ensemble average

@@ -9,6 +9,7 @@ from typing import Dict, Optional
 import dataclasses
 import io
 import json
+import math
 import re
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from v2.io import (
     read_l0_from_csv,
     parse_l0b_shots,
     parse_l1_shots,
+    parse_pmt_gain_header,
     write_l0b_to_csv,
     write_l1_shots,
     write_l1_to_csv,
@@ -29,6 +31,7 @@ from v2.io import (
 )
 from v2.config import load_config
 from v2.viewer_data import ViewerFile, load_raw_or_l0b, load_l1_or_l2
+from iop_geo import IOPProfileSet, IOPWindowAverage
 
 # The instrument's shot-file naming convention: subsequent files in a
 # sequence get "_N" appended, but the FIRST file is written with no numeric
@@ -53,6 +56,15 @@ L1_PROC = L1Processor(INSTRUMENT_CONFIG)
 L1_CROSS_PROC = L1CrossProcessor()  # stateless: no config needed
 L2_PROC = L2Processor(INSTRUMENT_CONFIG)
 L3_PROC = L3Processor(INSTRUMENT_CONFIG)
+
+# Every ac-s IOP cast under IOPS/, loaded once at startup (33 casts took
+# ~1s locally) -- each cast's c(lambda) spectrum is pre-interpolated to
+# 532/650nm per row regardless of fit window (see IOPProfileSet), so this
+# doesn't need to be redone per L2 request. None when IOPS/ doesn't exist
+# (e.g. a deployment without IOP data) -- the L2 route then just leaves
+# ct532_near/ct532_far/ct650_near/ct650_far unset rather than failing.
+IOPS_DIR = Path(__file__).parent.parent / "IOPS"
+IOP_PROFILES: Optional[IOPProfileSet] = IOPProfileSet(IOPS_DIR) if IOPS_DIR.exists() else None
 
 # Single "currently loaded file" slot for the ad-hoc viewer (see
 # viewer_data.py) -- a local inspection tool, not multi-user state.
@@ -85,6 +97,14 @@ def compare_page():
     """File-vs-file waveform comparator ('visual diff')"""
     return render_template(
         "compare.html", instrument=INSTRUMENT_CONFIG.get("instrument_id", "?"), active_tab="viewer2"
+    )
+
+
+@app.route("/scalar")
+def scalar_page():
+    """Per-shot scalar viewer: K_lidar/c_est/power/laser_temp/attitude vs pulse time."""
+    return render_template(
+        "scalar.html", instrument=INSTRUMENT_CONFIG.get("instrument_id", "?"), active_tab="scalar"
     )
 
 
@@ -204,6 +224,132 @@ def compare_average():
         return jsonify({"error": f"No file loaded in slot {slot!r}"}), 400
     identity = request.args.get('identity', '')
     return jsonify(viewer_file.average(identity)), 200
+
+
+def _finite_or_none(value):
+    """NaN/Infinity aren't valid JSON -- Python's json module will still
+    silently emit the bare tokens NaN/Infinity for them (an extension the
+    JSON spec doesn't allow), which then fails outright in the browser's
+    JSON.parse (see /api/scalar/load's fetch in scalar.html). Some raw
+    shot files genuinely have "nan" text in a Roll/Pitch/Yaw column (an
+    instrument-side logging glitch, not a parsing bug) -- that flows
+    through L0b/L1/L2 as a real Python NaN, since float('nan') happily
+    round-trips it. None (JSON null) is the honest value for "no valid
+    reading here", and lets scalar.html's Plotly traces skip the point
+    rather than plot a fabricated one."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _scalar_row_from_l0b(shot) -> dict:
+    """One raw/L0b shot's scalars. K_lidar/c_est/qak_flag don't exist below
+    L2 -- always None here, same shape as _scalar_row_from_l1 below so the
+    client-side merge (see scalar.html) doesn't need to special-case level."""
+    l0 = shot.l0
+    return {
+        'timestamp_ms': int(l0.timestamp_utc.timestamp() * 1000),
+        'identity': l0.metadata.get('identity', ''),
+        'roll': _finite_or_none(l0.metadata.get('roll')),
+        'pitch': _finite_or_none(l0.metadata.get('pitch')),
+        'yaw': _finite_or_none(l0.metadata.get('yaw')),
+        'laser_temp_c': _finite_or_none(l0.metadata.get('laser_temp_c')),
+        'power_a_sum': _finite_or_none(shot.power_a_sum),
+        'power_b_sum': _finite_or_none(shot.power_b_sum),
+        'k_lidar': None,
+        'c_est': None,
+        'qak_flag': None,
+        'ct532_near': None,
+        'ct532_far': None,
+        'ct650_near': None,
+        'ct650_far': None,
+    }
+
+
+def _scalar_row_from_l1(shot) -> dict:
+    """One L1/L2 shot's scalars. K_lidar/c_est/qak_flag/ct532_*/ct650_* are
+    only non-None on an L2 file's rows (see L2Processor._fit_k_lidar and
+    app_v2.py's L2 route for ct532_*/ct650_*) -- None for a plain L1 file,
+    same as the file's own KLidar/CEst/QAK/CT532Near/etc columns."""
+    l0 = shot.l0b.l0
+    return {
+        'timestamp_ms': int(l0.timestamp_utc.timestamp() * 1000),
+        'identity': l0.metadata.get('identity', ''),
+        'roll': _finite_or_none(l0.metadata.get('roll')),
+        'pitch': _finite_or_none(l0.metadata.get('pitch')),
+        'yaw': _finite_or_none(l0.metadata.get('yaw')),
+        'laser_temp_c': _finite_or_none(l0.metadata.get('laser_temp_c')),
+        'power_a_sum': _finite_or_none(shot.l0b.power_a_sum),
+        'power_b_sum': _finite_or_none(shot.l0b.power_b_sum),
+        'k_lidar': _finite_or_none(shot.k_lidar),
+        'c_est': _finite_or_none(shot.c_est),
+        'qak_flag': shot.qak_flag,
+        'ct532_near': _finite_or_none(shot.ct532_near),
+        'ct532_far': _finite_or_none(shot.ct532_far),
+        'ct650_near': _finite_or_none(shot.ct650_near),
+        'ct650_far': _finite_or_none(shot.ct650_far),
+    }
+
+
+def _pmt_gains_for_file(lines) -> Dict[str, Optional[float]]:
+    """{channel_id: HV volts} for this file, from its own '# pmt_gain_N'
+    header lines (unchanged across raw/L0b/L1/L2 -- write_l1_shots forwards
+    them verbatim at every stage) mapped through each channel's
+    config.pmt_gain_index, same lookup L1Processor._lookup_pmt_hv uses.
+    None for a channel whose index has no matching header line.
+
+    The PMT gain diagnostic (see scalar.html) is deliberately built this
+    way -- from the file's own header comments, on demand -- rather than as
+    stored per-shot scalars: the value is constant for every shot in a
+    file, so writing it as 6 more per-row columns would just repeat the
+    same 6 numbers thousands of times over for no benefit already-forwarded
+    header lines don't provide.
+    """
+    pmt_gain_by_index = parse_pmt_gain_header(lines)
+    return {
+        channel_id: pmt_gain_by_index.get(channel.pmt_gain_index)
+        for channel_id, channel in INSTRUMENT_CONFIG['channels'].items()
+    }
+
+
+@app.route("/api/scalar/load", methods=["POST"])
+def scalar_load():
+    """
+    Parse one uploaded raw/L0b/L1/L2 shot file and return every shot's
+    scalar values (roll/pitch/yaw/laser_temp/power, plus K_lidar/c_est/QAK
+    where they exist) as a flat JSON list, plus this file's own per-channel
+    PMT gain (see _pmt_gains_for_file) -- constant for the whole file, so
+    it's returned once rather than repeated on every shot row.
+
+    One call per file, same as /api/process-file -- the client merges
+    multiple files itself for "a directory of files" (see scalar.html),
+    mirroring index_v2.html's directory-picker pattern. Unlike
+    /api/viewer/load there's no windowing or server-side caching: a shot's
+    scalars are a handful of floats, not a whole waveform, so even a large
+    file's full per-shot list is cheap to return in one response.
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    file = request.files['file']
+    filename = request.form.get('originalFilename') or file.filename or "uploaded.csv"
+    file_type = request.form.get('fileType', 'raw')  # 'raw' | 'l0b' | 'l1' | 'l2'
+
+    try:
+        content = file.read().decode('utf-8-sig', errors='replace')
+        lines = content.splitlines(keepends=True)
+        pmt_gains = _pmt_gains_for_file(lines)
+        if file_type in ('raw', 'l0b'):
+            shots = parse_l0b_shots(lines, source_file=filename)
+            rows = [_scalar_row_from_l0b(s) for s in shots]
+        else:
+            shots = parse_l1_shots(lines, source_file=filename)
+            rows = [_scalar_row_from_l1(s) for s in shots]
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse {filename}: {e}"}), 400
+
+    return jsonify({
+        "filename": filename, "file_type": file_type, "shots": rows, "pmt_gains": pmt_gains,
+    }), 200
 
 
 # Disabled: not called by the current UI (index_v2.html only uses
@@ -361,10 +507,10 @@ def process_file():
         shot file; required for stage='l0b'), 'l0b' (required for
         stage='l1'), or 'l1' (required for stage='l2').
       - 'originalFilename': the RAW file's name, always -- used for output
-        naming and to locate the raw file (and its PM sibling) on disk when
-        deriving L0b, regardless of which stage is actually being requested.
-      - 'sourceDir': directory name the file was picked from, so the server
-        can find it (and, for L0b, its PM sibling) on its own filesystem.
+        naming, regardless of which stage is actually being requested.
+      - 'pmFile': the raw file's PM sibling, uploaded alongside it -- only
+        for stage='l0b'. Optional: its absence just means no PM data is
+        available, not an error (see pm_matched below).
       - 'pmtModelSource', 'preTriggerBins': L1-only UI options.
     """
     if 'file' not in request.files:
@@ -378,7 +524,6 @@ def process_file():
 
     stage = request.form.get('stage')
     input_stage = request.form.get('inputStage', 'raw')
-    source_dir_name = request.form.get('sourceDir')  # Directory name where file was selected from
     pmt_model_source = request.form.get('pmtModelSource', 'datasheet')  # L1 UI option, not a config setting
     pre_trigger_bins_raw = request.form.get('preTriggerBins')  # L1 UI option; None -> config default
     pre_trigger_bins = int(pre_trigger_bins_raw) if pre_trigger_bins_raw not in (None, '') else None
@@ -408,66 +553,53 @@ def process_file():
 
     try:
         if stage == "l0b":
-            project_root = Path(__file__).parent.parent
-
-            # Find the original shot file on the server's filesystem -- needed
-            # to locate its sibling PM file (match_power_data reads both from
-            # disk).
-            original_file = None
-            if source_dir_name:
-                search_paths = [
-                    project_root / "cruisedata" / source_dir_name / original_filename,
-                    project_root / "testdata" / source_dir_name / original_filename,
-                    project_root / source_dir_name / original_filename,
-                ]
-                for candidate_path in search_paths:
-                    if candidate_path.exists():
-                        original_file = candidate_path
-                        break
-
-            if not original_file:
-                return jsonify({"error": f"Could not find original file: {original_filename}"}), 400
-
-            sys.path.insert(0, str(project_root))
+            sys.path.insert(0, str(Path(__file__).parent.parent))
             from match_power_data import load_laser_shots, load_pm_data, match_laser_to_pm, export_matched_csv
 
-            laser_shots = load_laser_shots(original_file)
+            # load_laser_shots/load_pm_data/export_matched_csv all take a
+            # filepath and open() it themselves, so the uploaded bytes (the
+            # browser already has both files in hand -- see ensureInput and
+            # the pmFile lookup in index_v2.html) are staged to temp files
+            # rather than touching the server's filesystem at all.
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as tmp_shot:
+                tmp_shot.write(file.read())
+                tmp_shot_path = tmp_shot.name
 
-            # Exact-match PM sibling lookup, not a glob search. A glob (e.g.
-            # "*PM*.csv") is ambiguous the moment a directory holds more than
-            # one shot+PM pair -- exactly the case that broke the no-sequence-
-            # number first file, since its PM sibling ("..._PM.csv") and a
-            # later file's PM sibling ("..._PM_1.csv") would both match the
-            # same glob. The instrument's convention inserts "_PM" right
-            # before the sequence number (or appends it, when there is none).
-            m = _SEQUENCE_SUFFIX_RE.search(original_file.stem)
-            if m:
-                pm_stem = original_file.stem[:m.start()] + '_PM_' + m.group(1)
-            else:
-                pm_stem = original_file.stem + '_PM'
-            pm_file = original_file.with_name(pm_stem + original_file.suffix)
+            try:
+                pm_records = []
+                pm_upload = request.files.get('pmFile')
+                if pm_upload and pm_upload.filename:
+                    with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as tmp_pm:
+                        tmp_pm.write(pm_upload.read())
+                        tmp_pm_path = tmp_pm.name
+                    try:
+                        pm_records = load_pm_data(tmp_pm_path)
+                    except Exception:
+                        pm_records = []
+                    finally:
+                        Path(tmp_pm_path).unlink(missing_ok=True)
 
-            pm_records = []
-            if pm_file.exists():
+                laser_shots = load_laser_shots(tmp_shot_path)
+
+                # match_laser_to_pm() handles an empty pm_records list
+                # correctly on its own -- every shot comes back properly
+                # shaped with pm_matched=False and its original
+                # PowerASum/PowerBSum preserved -- so always route through it
+                # rather than short-circuiting to the raw (differently-shaped)
+                # laser_shots.
+                matched_data = match_laser_to_pm(laser_shots, pm_records)
+                pm_matched = bool(pm_records)
+
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as tmp_out:
+                    tmp_l0b_path = tmp_out.name
                 try:
-                    pm_records = load_pm_data(pm_file)
-                except Exception:
-                    pm_records = []
-
-            # match_laser_to_pm() handles an empty pm_records list correctly
-            # on its own -- every shot comes back properly shaped with
-            # pm_matched=False and its original PowerASum/PowerBSum preserved
-            # -- so always route through it rather than short-circuiting to
-            # the raw (differently-shaped) laser_shots.
-            matched_data = match_laser_to_pm(laser_shots, pm_records)
-            pm_matched = bool(pm_records)
-
-            with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as tmp:
-                tmp_l0b_path = tmp.name
-            export_matched_csv(original_file, matched_data, tmp_l0b_path)
-            with open(tmp_l0b_path, 'r') as f:
-                l0b_content = f.read()
-            Path(tmp_l0b_path).unlink(missing_ok=True)
+                    export_matched_csv(tmp_shot_path, matched_data, tmp_l0b_path)
+                    with open(tmp_l0b_path, 'r') as f:
+                        l0b_content = f.read()
+                finally:
+                    Path(tmp_l0b_path).unlink(missing_ok=True)
+            finally:
+                Path(tmp_shot_path).unlink(missing_ok=True)
 
             return Response(l0b_content, mimetype='text/csv', headers={
                 'X-Sequence-Id': str(sequence_id),
@@ -530,10 +662,84 @@ def process_file():
             if not l1_shots_all:
                 return jsonify({"warnings": ["L2 skipped: no recognized shots found in L1 input"]}), 200
 
+            # r1nf/r2nf/r1ff/r2ff/r1RamanNf/r2RamanNf/r1RamanFf/r2RamanFf are
+            # L2-only UI options (see L2Processor.__init__), same pattern as
+            # L1's pmtModelSource/preTriggerBins -- a pair must be fully
+            # supplied to override that window; a partial pair (one blank)
+            # is treated as "no override" for that window rather than
+            # guessing the other bound.
+            def _fit_window(r1_field: str, r2_field: str) -> Optional[tuple]:
+                r1_raw, r2_raw = request.form.get(r1_field), request.form.get(r2_field)
+                if r1_raw in (None, '') or r2_raw in (None, ''):
+                    return None
+                return (float(r1_raw), float(r2_raw))
+
+            fit_window_nf_m = _fit_window('r1nf', 'r2nf')
+            fit_window_ff_m = _fit_window('r1ff', 'r2ff')
+            fit_window_raman_nf_m = _fit_window('r1RamanNf', 'r2RamanNf')
+            fit_window_raman_ff_m = _fit_window('r1RamanFf', 'r2RamanFf')
+
+            if (
+                (fit_window_nf_m is None or fit_window_nf_m == tuple(L2_PROC.l2_constants.k_lidar_fit_window_nf_m))
+                and (fit_window_ff_m is None or fit_window_ff_m == tuple(L2_PROC.l2_constants.k_lidar_fit_window_ff_m))
+                and (fit_window_raman_nf_m is None or fit_window_raman_nf_m == tuple(L2_PROC.l2_constants.k_lidar_fit_window_raman_nf_m))
+                and (fit_window_raman_ff_m is None or fit_window_raman_ff_m == tuple(L2_PROC.l2_constants.k_lidar_fit_window_raman_ff_m))
+            ):
+                l2_proc = L2_PROC
+            else:
+                l2_proc = L2Processor(
+                    INSTRUMENT_CONFIG,
+                    fit_window_nf_m=fit_window_nf_m,
+                    fit_window_ff_m=fit_window_ff_m,
+                    fit_window_raman_nf_m=fit_window_raman_nf_m,
+                    fit_window_raman_ff_m=fit_window_raman_ff_m,
+                )
+
             by_channel: Dict[str, list] = {}
             for shot in l1_shots_all:
                 channel_id = next(iter(shot.signal))
                 by_channel.setdefault(channel_id, []).append(shot)
+
+            # In-situ ac-s reference values for K_lidar -- built against
+            # *this request's* fit windows and c_water baseline
+            # (l2_proc.l2_constants already reflects any per-request
+            # override above), not the config defaults, so ct532_near/etc
+            # line up with whatever window/baseline actually produced
+            # K_lidar this time. c_water is added back in (see
+            # IOPWindowAverage's docstring) so these are directly
+            # comparable to K_lidar (total attenuation), not c_est. None
+            # when IOPS/ wasn't found at startup -- every shot's
+            # ct532_near/ct532_far/ct650_near/ct650_far then stays None
+            # (see L1Data's docstring).
+            #
+            # range_offset_m: the K_lidar fit windows are in the lidar's
+            # own range_m, which has z=0 at the ship's hull bottom (where
+            # PALS is mounted) -- but an ac-s cast's depth (its pressure
+            # column) is referenced to the actual sea surface, the usual
+            # oceanographic convention. deployment_info.mounting_depth_m is
+            # how far below the surface that hull-bottom z=0 sits, so it's
+            # added to each window's [r1, r2] before it's used to select
+            # ac-s rows by depth -- NOT to K_lidar/c_est themselves, which
+            # stay entirely in the lidar's own range_m frame throughout.
+            iop_avg = None
+            if IOP_PROFILES is not None:
+                l2c = l2_proc.l2_constants
+                range_offset_m = INSTRUMENT_CONFIG.get('deployment_info', {}).get('mounting_depth_m', 0.0)
+
+                def _offset_window(window_m, offset=range_offset_m):
+                    r1, r2 = window_m
+                    return (r1 + offset, r2 + offset)
+
+                iop_avg = IOPWindowAverage(
+                    IOP_PROFILES,
+                    windows={
+                        'nf': _offset_window(l2c.k_lidar_fit_window_nf_m),
+                        'ff': _offset_window(l2c.k_lidar_fit_window_ff_m),
+                        'raman_nf': _offset_window(l2c.k_lidar_fit_window_raman_nf_m),
+                        'raman_ff': _offset_window(l2c.k_lidar_fit_window_raman_ff_m),
+                    },
+                    c_water={532.0: l2c.c_water_532, 650.0: l2c.c_water_650},
+                )
 
             # Per section 5.5: range correction (eqn 7) is a per-shot
             # operation -- L2 shots are just L1 shots with X_j(r) = r^2 *
@@ -548,13 +754,28 @@ def process_file():
             warnings = []
             for channel_id, ensemble in by_channel.items():
                 try:
-                    l2 = L2_PROC.process(ensemble)
+                    l2 = l2_proc.process(ensemble)
                 except Exception as e:
                     warnings.append(f"L2 skipped for {channel_id}: {e}")
                     continue
-                for l1_shot, rc in zip(l2.l1_ensemble, l2.range_corrected):
-                    l2_shots.append(dataclasses.replace(l1_shot, signal=rc))
-                ensemble_snr_shots.append(L2_PROC.build_ensemble_snr(ensemble, channel_id))
+                for l1_shot, rc, k_row, c_row, qak_row in zip(
+                    l2.l1_ensemble, l2.range_corrected, l2.k_lidar, l2.c_est, l2.qak_flag
+                ):
+                    iop_values = (
+                        iop_avg.values_for(l1_shot.l0b.l0.timestamp_utc) if iop_avg is not None
+                        else {}
+                    )
+                    l2_shots.append(dataclasses.replace(
+                        l1_shot, signal=rc,
+                        k_lidar=k_row.get(channel_id),
+                        c_est=c_row.get(channel_id),
+                        qak_flag=qak_row.get(channel_id),
+                        ct532_near=iop_values.get('ct532_near'),
+                        ct532_far=iop_values.get('ct532_far'),
+                        ct650_near=iop_values.get('ct650_near'),
+                        ct650_far=iop_values.get('ct650_far'),
+                    ))
+                ensemble_snr_shots.append(l2_proc.build_ensemble_snr(ensemble, channel_id))
 
             if not l2_shots:
                 warnings = warnings or ["L2 skipped: no channel ensembles available"]
@@ -563,7 +784,11 @@ def process_file():
             l2_buf = io.StringIO()
             write_l1_shots(l2_shots + ensemble_snr_shots, l2_buf, stage_label="L2")
 
-            headers = {'X-Sequence-Id': str(sequence_id)}
+            headers = {
+                'X-Sequence-Id': str(sequence_id),
+                'X-Fit-Window-NF-M': json.dumps(list(l2_proc.l2_constants.k_lidar_fit_window_nf_m)),
+                'X-Fit-Window-FF-M': json.dumps(list(l2_proc.l2_constants.k_lidar_fit_window_ff_m)),
+            }
             if warnings:
                 headers['X-Warnings'] = json.dumps(warnings)
             return Response(l2_buf.getvalue(), mimetype='text/csv', headers=headers)
@@ -576,4 +801,4 @@ if __name__ == "__main__":
     # Port 5000 is claimed by macOS's AirPlay Receiver (ControlCenter) on most Macs,
     # which causes requests to be flakily routed between it and this server. 5025
     # avoids that collision.
-    app.run(debug=True, port=5025)
+    app.run(debug=True, port=5026)

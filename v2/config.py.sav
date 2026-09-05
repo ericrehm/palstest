@@ -1,0 +1,196 @@
+"""
+Configuration loader and schema for PALS instrument characterization.
+Loads JSON-based calibration/characterization data for one instrument.
+"""
+
+import json
+from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
+from dataclasses import dataclass
+
+
+@dataclass
+class L1Constants:
+    """Global constants for L1 equation (1) range conversion and (5) energy normalization.
+    See Appendix A section 5.1/5.3. tau_j (per-channel) lives in calibration.timing_offsets_ns;
+    B_j/sigma_B_j (per-channel) live in calibration.background.
+    """
+    c0_m_per_s: float = 299792458.0   # vacuum speed of light
+    n_w: float = 1.34                 # refractive index of seawater
+    fs_hz: float = 2.5e9              # digitizer sampling rate
+    t0_ns: float = 0.0                # global trigger/timing reference (lab-calibrated)
+    e_ref_scale: float = 1.0
+
+
+@dataclass
+class ProcessingDefaults:
+    """L1-L3 processing algorithm defaults"""
+    background_mad_scale: float = 1.4826  # MAD to sigma conversion
+    background_pre_trigger_bins: int = 50
+    background_late_range_bins: int = 0
+    energy_ref_percentile: int = 50  # Reference energy = median
+    adc_near_clipping_percent: float = 95.0
+    adc_clipping_percent: float = 99.5
+    snr_threshold_l2: float = 1.0
+    snr_threshold_reporting: Tuple[float, ...] = (1.0, 3.0, 10.0)
+    nf_ff_common_range_m: Tuple[float, float] = (0.2, 0.5)
+    g_adc: float = 0.001  # V/code or equivalent
+    
+
+@dataclass
+class ChannelConfig:
+    """Configuration for one receiver channel"""
+    channel_id: str  # e.g., "NF_CO", "FF_RAMAN"
+    pmt_model: str  # e.g., "R9880U20"
+    pmt_hv_nominal: float  # Volts
+    adc_range_v: float  # ADC input range in volts
+    adc_full_scale_code: int  # e.g., 65535 for 16-bit
+    responsivity_file: Optional[str] = None  # Path to PMT responsivity data
+    gain_file: Optional[str] = None  # Path to gain calibration
+    
+
+def load_config(config_path: Path) -> Dict[str, Any]:
+    """
+    Load instrument configuration from JSON file.
+    
+    Args:
+        config_path: Path to PALS_*.json configuration file
+        
+    Returns:
+        Dictionary with keys:
+        - instrument_id
+        - channels: Dict[channel_id] -> ChannelConfig
+        - calibration: calibration constants and file paths
+        - processing: ProcessingDefaults
+        - metadata: deployment info, etc.
+    """
+    with open(config_path, 'r') as f:
+        data = json.load(f)
+    
+    # Validate and parse
+    config = {
+        'instrument_id': data.get('instrument_id', 'PALS_UNKNOWN'),
+        'channels': {},
+        'calibration': data.get('calibration', {}),
+        'l1_constants': L1Constants(**data.get('l1_constants', {})),
+        'processing': ProcessingDefaults(**data.get('processing_defaults', {})),
+        'metadata': data.get('metadata', {}),
+    }
+    
+    # Parse channel configs
+    for ch_id, ch_data in data.get('channels', {}).items():
+        config['channels'][ch_id] = ChannelConfig(
+            channel_id=ch_id,
+            pmt_model=ch_data.get('pmt_model'),
+            pmt_hv_nominal=ch_data.get('pmt_hv_nominal'),
+            adc_range_v=ch_data.get('adc_range_v'),
+            adc_full_scale_code=ch_data.get('adc_full_scale_code'),
+            responsivity_file=ch_data.get('responsivity_file'),
+            gain_file=ch_data.get('gain_file'),
+        )
+    
+    return config
+
+
+def save_config_template(output_path: Path):
+    """Generate a template JSON config file"""
+    template = {
+        "instrument_id": "PALS_SBS312",
+        "laser_wavelength_nm": 532,
+        "deployment_info": {
+            "platform": "RV Solander",
+            "location": "Coral Sea",
+            "dates": "2026-08-29 to 2026-09-05"
+        },
+        "channels": {
+            "NF_CO": {
+                "pmt_model": "R9880U20",
+                "pmt_hv_nominal": 425,
+                "adc_range_v": 1.0,
+                "adc_full_scale_code": 65535,
+                "responsivity_file": "pmt/R9880U20_responsivity_digitized.csv",
+                "gain_file": "pmt/R9880U20_gain_digitized.csv"
+            },
+            "NF_CROSS": {
+                "pmt_model": "R9880U20",
+                "pmt_hv_nominal": 425,
+                "adc_range_v": 1.0,
+                "adc_full_scale_code": 65535,
+                "responsivity_file": "pmt/R9880U20_responsivity_digitized.csv",
+                "gain_file": "pmt/R9880U20_gain_digitized.csv"
+            },
+            "NF_RAMAN": {
+                "pmt_model": "R9880U210",
+                "pmt_hv_nominal": 425,
+                "adc_range_v": 1.0,
+                "adc_full_scale_code": 65535,
+                "responsivity_file": "pmt/R9880U210_responsivity_digitized.csv",
+                "gain_file": None
+            },
+            "FF_CO": {
+                "pmt_model": "R9880U20",
+                "pmt_hv_nominal": 425,
+                "adc_range_v": 1.0,
+                "adc_full_scale_code": 65535,
+                "responsivity_file": "pmt/R9880U20_responsivity_digitized.csv",
+                "gain_file": "pmt/R9880U20_gain_digitized.csv"
+            },
+            "FF_CROSS": {
+                "pmt_model": "R9880U20",
+                "pmt_hv_nominal": 425,
+                "adc_range_v": 1.0,
+                "adc_full_scale_code": 65535,
+                "responsivity_file": "pmt/R9880U20_responsivity_digitized.csv",
+                "gain_file": "pmt/R9880U20_gain_digitized.csv"
+            },
+            "FF_RAMAN": {
+                "pmt_model": "R9880U210",
+                "pmt_hv_nominal": 425,
+                "adc_range_v": 1.0,
+                "adc_full_scale_code": 65535,
+                "responsivity_file": "pmt/R9880U210_responsivity_digitized.csv",
+                "gain_file": None
+            }
+        },
+        "calibration": {
+            "timing_offsets_ns": {
+                "NF_CO": 0.0,
+                "NF_CROSS": 0.0,
+                "NF_RAMAN": 0.0,
+                "FF_CO": 0.0,
+                "FF_CROSS": 0.0,
+                "FF_RAMAN": 0.0
+            },
+            "adc_offsets": {
+                "NF_CO": 2047,
+                "NF_CROSS": 2047,
+                "NF_RAMAN": 2047,
+                "FF_CO": 2047,
+                "FF_CROSS": 2047,
+                "FF_RAMAN": 2047
+            },
+            "blank_counts": {
+                "NF_CO": 0,
+                "NF_CROSS": 0,
+                "NF_RAMAN": 0,
+                "FF_CO": 0,
+                "FF_CROSS": 0,
+                "FF_RAMAN": 0ß
+            }
+        },
+        "processing_defaults": {
+            "background_mad_scale": 1.4826,
+            "background_pre_trigger_bins": 50,
+            "background_late_range_bins": 0,
+            "energy_ref_percentile": 50,
+            "adc_near_clipping_percent": 85.0,
+            "adc_clipping_percent": 95.0,
+            "snr_threshold_l2": 1.0,
+            "g_adc": 0.001
+        }
+    }
+    
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'w') as f:
+        json.dump(template, f, indent=2)
+    print(f"Template config written to {output_path}")

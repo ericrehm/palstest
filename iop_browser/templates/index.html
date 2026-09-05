@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IOP Browser</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    /* Dark is the default (no class needed); body.light overrides every
+       variable below. Plotly figure colors (paper/plot background, font,
+       gridlines) aren't CSS-driven -- they're plain JS objects rebuilt on
+       every render from the THEMES table, kept in sync with these by eye. */
+    :root {
+      --bg: #1a1a1a; --fg: #e0e0e0; --muted: #999; --hint: #777;
+      --panel-bg: #242424; --panel-border: #3a3a3a; --label: #888;
+      --select-bg: #2a2a2a; --select-border: #444; --heading: #ccc;
+    }
+    body.light {
+      --bg: #f5f5f5; --fg: #1a1a1a; --muted: #666; --hint: #777;
+      --panel-bg: #ffffff; --panel-border: #ddd; --label: #666;
+      --select-bg: #ffffff; --select-border: #ccc; --heading: #333;
+    }
+    body { background: var(--bg); color: var(--fg); font-family: -apple-system, sans-serif; margin: 0; padding: 16px; }
+    h1 { font-size: 1.3em; margin: 0 0 12px; }
+    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    select { background: var(--select-bg); color: var(--fg); border: 1px solid var(--select-border); border-radius: 4px; padding: 5px 8px; min-width: 260px; }
+    #loadStatus { color: var(--muted); font-size: 0.9em; }
+    #loadStatus.error { color: #ff6666; }
+    .status-row {
+      display: flex; gap: 20px; align-items: center; flex-wrap: wrap; background: var(--panel-bg); border: 1px solid var(--panel-border);
+      border-radius: 6px; padding: 8px 14px; margin-bottom: 12px; font-size: 0.92em;
+    }
+    .status-row .label { color: var(--label); margin-right: 5px; }
+    .status-row .value { color: var(--fg); font-variant-numeric: tabular-nums; }
+    #themeToggle {
+      margin-left: auto; width: 22px; height: 22px; border-radius: 50%; padding: 0; cursor: pointer;
+      border: 1.5px solid var(--label);
+      background: linear-gradient(to right, #000000 50%, #ffffff 50%);
+    }
+    .plots { display: flex; gap: 14px; flex-wrap: wrap; }
+    .plot-col { flex: 1 1 480px; min-width: 380px; }
+    .plot-col h2 { font-size: 1em; font-weight: 500; color: var(--heading); margin: 0 0 6px; }
+    .hint { color: var(--hint); font-size: 0.85em; margin-top: 4px; }
+    #spectralPlot, #profilePlot { width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>IOP Browser</h1>
+
+  <div class="toolbar">
+    <select id="fileSelect" disabled><option>Loading file list...</option></select>
+    <span id="loadStatus"></span>
+  </div>
+
+  <div class="status-row" id="statusRow">
+    <span><span class="label">File</span><span class="value" id="statFile">–</span></span>
+    <span><span class="label">Date</span><span class="value" id="statDate">–</span></span>
+    <span><span class="label">Time</span><span class="value" id="statTime">–</span></span>
+    <span><span class="label">Lat</span><span class="value" id="statLat">–</span></span>
+    <span><span class="label">Lon</span><span class="value" id="statLon">–</span></span>
+    <span><span class="label">Depth</span><span class="value" id="statDepth">–</span></span>
+    <button id="themeToggle" type="button" title="Toggle light/dark theme" aria-label="Toggle light/dark theme"></button>
+  </div>
+
+  <div class="plots">
+    <div class="plot-col">
+      <h2>Spectrum at selected depth: a(&lambda;), c(&lambda;)</h2>
+      <div id="spectralPlot"></div>
+      <div class="hint">Click to jump the wavelength cursor; drag the dotted line to fine-tune, or use &larr;/&rarr;. Selects &lambda; for the depth-profile plot on the right.</div>
+    </div>
+    <div class="plot-col">
+      <h2>Depth profile at selected &lambda;: a(z), c(z)</h2>
+      <div id="profilePlot"></div>
+      <div class="hint">Click to jump the depth cursor; drag the dotted line to fine-tune, or use &uarr;/&darr;. Selects depth for the spectrum plot on the left.</div>
+    </div>
+  </div>
+
+  <script>
+    const A_COLOR = '#ef4444';   // absorption a(lambda) -- red
+    const C_COLOR = '#3b82f6';   // attenuation c(lambda) -- blue
+    const DOT_COLOR = '#000000';
+    const MIN_DEPTH_FOR_SCALE = 2;  // rows shallower than this (surface entry artifacts) are excluded from the profile plot's x-axis autoscale
+
+    // Plotly figure colors aren't CSS -- they're plain values baked into
+    // each layout object on every render, so the light/dark toggle has to
+    // rebuild the plots (not just flip a CSS class) to actually apply.
+    // Keep these in sync by eye with the CSS custom properties in <style>.
+    const THEMES = {
+      dark: { paper: '#1a1a1a', plot: '#1a1a1a', font: '#e0e0e0', grid: '#333', cursor: '#999' },
+      light: { paper: '#ffffff', plot: '#ffffff', font: '#1a1a1a', grid: '#ddd', cursor: '#666' },
+    };
+    const THEME_STORAGE_KEY = 'iopBrowserTheme';
+    let currentTheme = localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark';
+    function theme() { return THEMES[currentTheme]; }
+
+    let aWavelengths = [];
+    let cWavelengths = [];
+    let castRows = [];       // current cast's per-row data
+    let castFilename = '';
+    let hasLatLon = false;
+    let maxDepth = 1;        // this cast's own max pressure
+    let minDepth = 0;        // this cast's own min pressure -- the profile plot's y-axis runs [maxDepth, minDepth], autoscaled to the cast's actual depth range (not assumed to start at 0), computed once per load
+    let selectedWavelength = 500;  // nm, continuous -- drives the profile plot
+    let selectedDepthIdx = 0;      // index into castRows -- drives the spectral plot
+
+    // Linear interpolation of one row's spectrum (values, indexed the same
+    // as `wavelengths`) at an arbitrary target wavelength. `wavelengths` is
+    // sorted ascending. null entries (missing/-999 upstream) propagate to
+    // a null result for that bracket rather than silently treating them as 0.
+    function interpAtWavelength(wavelengths, values, target) {
+      const n = wavelengths.length;
+      let lo, hi;
+      if (target <= wavelengths[0]) { lo = 0; hi = 1; }
+      else if (target >= wavelengths[n - 1]) { lo = n - 2; hi = n - 1; }
+      else {
+        lo = 0;
+        while (lo < n - 2 && wavelengths[lo + 1] < target) lo++;
+        hi = lo + 1;
+      }
+      const y0 = values[lo], y1 = values[hi];
+      if (y0 == null || y1 == null) return null;
+      const x0 = wavelengths[lo], x1 = wavelengths[hi];
+      const frac = (target - x0) / (x1 - x0);
+      return y0 + frac * (y1 - y0);
+    }
+
+    // Depth selection always snaps to an actual sampled row -- a/c spectra
+    // and lat/lon/datetime only exist at real rows, there's nothing to
+    // interpolate between them for the status row or the left-hand plot.
+    function nearestRowIndexForDepth(depth) {
+      let best = 0, bestDist = Infinity;
+      for (let i = 0; i < castRows.length; i++) {
+        const d = Math.abs(castRows[i].pressure - depth);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+      return best;
+    }
+
+    function formatDateTime(iso) {
+      // iso like "2026-08-30T09:06:49.008000+0000" -- split into date/time
+      // for the two separate status fields rather than showing one blob.
+      const m = iso.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
+      return m ? { date: m[1], time: m[2] + ' UTC' } : { date: iso, time: '' };
+    }
+
+    function renderStatusRow() {
+      const row = castRows[selectedDepthIdx];
+      document.getElementById('statFile').textContent = castFilename || '–';
+      if (!row) return;
+      const { date, time } = formatDateTime(row.datetime);
+      document.getElementById('statDate').textContent = date;
+      document.getElementById('statTime').textContent = time;
+      document.getElementById('statDepth').textContent = row.pressure.toFixed(2) + ' m';
+      document.getElementById('statLat').textContent = row.lat != null ? row.lat.toFixed(6) : (hasLatLon ? '–' : 'n/a (.txt)');
+      document.getElementById('statLon').textContent = row.lon != null ? row.lon.toFixed(6) : (hasLatLon ? '–' : 'n/a (.txt)');
+    }
+
+    // Pixel <-> data-coordinate conversion using Plotly's own resolved axis
+    // objects (div._fullLayout.{x,y}axis has .l2p/.p2l for exactly this),
+    // plus the div's on-page position and Plotly's own plotting-area inset
+    // (_fullLayout._size.{l,t,w,h}) -- needed because cursor dragging here
+    // is hand-rolled (see wireCursorDrag's docstring for why) rather than
+    // handed to Plotly's shape-editing.
+    function plotAreaRect(div) {
+      const rect = div.getBoundingClientRect();
+      const size = div._fullLayout._size;
+      return { left: rect.left + size.l, top: rect.top + size.t, width: size.w, height: size.h };
+    }
+    function dataToClientPixel(div, axisLetter, dataVal) {
+      const area = plotAreaRect(div);
+      const ax = axisLetter === 'x' ? div._fullLayout.xaxis : div._fullLayout.yaxis;
+      return (axisLetter === 'x' ? area.left : area.top) + ax.l2p(dataVal);
+    }
+    function clientPixelToData(div, axisLetter, clientPixel) {
+      const area = plotAreaRect(div);
+      const ax = axisLetter === 'x' ? div._fullLayout.xaxis : div._fullLayout.yaxis;
+      const origin = axisLetter === 'x' ? area.left : area.top;
+      return ax.p2l(clientPixel - origin);
+    }
+
+    // Plotly's native zoom/pan stay on (default dragmode, full modebar) --
+    // coexists with the hand-rolled cursor drag (see wireCursorDrag) by
+    // splitting on where a gesture STARTS: a press within
+    // HIT_TOLERANCE_PX of the cursor line calls preventDefault/
+    // stopPropagation so it's ours exclusively (Plotly never sees it,
+    // so it can't zoom the plot out from under a cursor-drag); a press
+    // anywhere else is left completely alone -- not even inspected until
+    // mouseup -- so Plotly's own mousedown/mousemove handlers see the
+    // untouched sequence and zoom/pan exactly as they would with no
+    // listener of ours present at all. Click-to-jump then only fires if
+    // that same mouseup turns out to have moved less than CLICK_SLOP_PX --
+    // the same click-vs-drag threshold Plotly itself uses to tell a
+    // plain click from a zoom-drag, so the two never fight over what a
+    // given gesture means.
+    const PLOT_CONFIG = {
+      displayModeBar: true, responsive: true, displaylogo: false,
+    };
+    const PLOT_HEIGHT = 630;  // 420 * 1.5
+
+    function buildSpectralFigure() {
+      const row = castRows[selectedDepthIdx];
+      const aTrace = { x: aWavelengths, y: row.a, mode: 'lines', name: 'a(λ)', line: { color: A_COLOR, width: 1.5 } };
+      const cTrace = { x: cWavelengths, y: row.c, mode: 'lines', name: 'c(λ)', line: { color: C_COLOR, width: 1.5 } };
+      const aAtCursor = interpAtWavelength(aWavelengths, row.a, selectedWavelength);
+      const cAtCursor = interpAtWavelength(cWavelengths, row.c, selectedWavelength);
+      const dotTrace = {
+        x: [selectedWavelength, selectedWavelength], y: [aAtCursor, cAtCursor],
+        mode: 'markers', marker: { color: DOT_COLOR, size: 11, line: { color: '#fff', width: 1 } },
+        showlegend: false, hoverinfo: 'skip',
+      };
+      // Autoscale to THIS row's own data on both ends -- a(lambda) can dip
+      // below 0 (instrument noise near the spectrum's edges), so the floor
+      // isn't assumed to be 0; c > a always, so c alone sets the ceiling.
+      // Not a cast-wide fixed value -- rescales as the depth cursor moves.
+      const rowValues = row.a.concat(row.c).filter((v) => v != null);
+      const rowMin = Math.min(...rowValues);
+      const rowMaxC = Math.max(...row.c.filter((v) => v != null));
+      const layout = {
+        height: PLOT_HEIGHT,
+        margin: { l: 60, r: 20, t: 10, b: 45 },
+        paper_bgcolor: theme().paper, plot_bgcolor: theme().plot, font: { color: theme().font },
+        showlegend: true, legend: { orientation: 'h', y: 1.08 },
+        xaxis: { title: 'Wavelength (nm)', gridcolor: theme().grid, range: [400, 750] },
+        yaxis: { title: 'Attenuation (1/m)', gridcolor: theme().grid, range: [rowMin, rowMaxC] },
+        shapes: [{
+          type: 'line', xref: 'x', yref: 'paper',
+          x0: selectedWavelength, x1: selectedWavelength, y0: 0, y1: 1,
+          line: { color: theme().cursor, width: 1.5, dash: 'dot' },
+        }],
+        uirevision: 'spectral',
+      };
+      return { data: [aTrace, cTrace, dotTrace], layout };
+    }
+
+    function buildProfileFigure() {
+      const depths = castRows.map((r) => r.pressure);
+      const aVals = castRows.map((r) => interpAtWavelength(aWavelengths, r.a, selectedWavelength));
+      const cVals = castRows.map((r) => interpAtWavelength(cWavelengths, r.c, selectedWavelength));
+      const wl = selectedWavelength.toFixed(1);
+      const aTrace = { x: aVals, y: depths, mode: 'lines', name: `a(${wl} nm, z)`, line: { color: A_COLOR, width: 1.5 } };
+      const cTrace = { x: cVals, y: depths, mode: 'lines', name: `c(${wl} nm, z)`, line: { color: C_COLOR, width: 1.5 } };
+      const curRow = castRows[selectedDepthIdx];
+      const aAtDepth = interpAtWavelength(aWavelengths, curRow.a, selectedWavelength);
+      const cAtDepth = interpAtWavelength(cWavelengths, curRow.c, selectedWavelength);
+      const dotTrace = {
+        x: [aAtDepth, cAtDepth], y: [curRow.pressure, curRow.pressure],
+        mode: 'markers', marker: { color: DOT_COLOR, size: 11, line: { color: '#fff', width: 1 } },
+        showlegend: false, hoverinfo: 'skip',
+      };
+      // Ceiling: excludes rows shallower than MIN_DEPTH_FOR_SCALE, since
+      // surface entry/near-surface readings can spike well above the rest
+      // of the profile and would otherwise dominate the scale. Floor: the
+      // FULL (unfiltered) profile instead -- a's negative dips are
+      // themselves a near-surface phenomenon, so applying the same
+      // near-surface exclusion to the floor would hide exactly the
+      // negative values the floor exists to show.
+      const allVals = aVals.concat(cVals).filter((v) => v != null);
+      const deepVals = castRows
+        .filter((r) => r.pressure > MIN_DEPTH_FOR_SCALE)
+        .flatMap((r) => [
+          interpAtWavelength(aWavelengths, r.a, selectedWavelength),
+          interpAtWavelength(cWavelengths, r.c, selectedWavelength),
+        ])
+        .filter((v) => v != null);
+      const xMin = allVals.length ? Math.min(...allVals) : 0;
+      const xMax = deepVals.length ? Math.max(...deepVals) : 1;
+      const layout = {
+        height: PLOT_HEIGHT,
+        margin: { l: 60, r: 20, t: 10, b: 45 },
+        paper_bgcolor: theme().paper, plot_bgcolor: theme().plot, font: { color: theme().font },
+        showlegend: true, legend: { orientation: 'h', y: 1.08 },
+        xaxis: { title: 'Attenuation (1/m)', gridcolor: theme().grid, range: [xMin, xMax] },
+        // Explicit [maxDepth, minDepth] range (deep at the bottom edge,
+        // shallow at the top), autoscaled to this cast's own actual depth
+        // range -- not autorange:'reversed' (a fixed, deliberate range
+        // can't be silently knocked out of "deeper is down" by a stray
+        // zoom the way an autorange setting could), and not hardcoded to
+        // 0 at the top (a cast's first row is rarely exactly at the
+        // surface, so that would leave dead space above the data).
+        yaxis: { title: 'Depth (m)', gridcolor: theme().grid, range: [maxDepth, minDepth] },
+        shapes: [{
+          type: 'line', xref: 'paper', yref: 'y',
+          x0: 0, x1: 1, y0: curRow.pressure, y1: curRow.pressure,
+          line: { color: theme().cursor, width: 1.5, dash: 'dot' },
+        }],
+        uirevision: 'profile',
+      };
+      return { data: [aTrace, cTrace, dotTrace], layout };
+    }
+
+    function renderSpectralPlot() {
+      const fig = buildSpectralFigure();
+      Plotly.react('spectralPlot', fig.data, fig.layout, PLOT_CONFIG);
+    }
+
+    function renderProfilePlot() {
+      const fig = buildProfileFigure();
+      Plotly.react('profilePlot', fig.data, fig.layout, PLOT_CONFIG);
+    }
+
+    function renderAll() {
+      renderStatusRow();
+      renderSpectralPlot();
+      renderProfilePlot();
+    }
+
+    // Only the OTHER plot gets a full Plotly.react -- rebuilding the plot
+    // that's actively mid-drag on every mousemove would be needlessly
+    // heavy. The dragged plot's own cursor shape and dot marker are moved
+    // directly via lightweight relayout/restyle calls instead.
+    function onWavelengthChanged(fromSpectralDrag) {
+      renderStatusRow();
+      renderProfilePlot();
+      if (fromSpectralDrag) {
+        const row = castRows[selectedDepthIdx];
+        const aAtCursor = interpAtWavelength(aWavelengths, row.a, selectedWavelength);
+        const cAtCursor = interpAtWavelength(cWavelengths, row.c, selectedWavelength);
+        Plotly.relayout('spectralPlot', { 'shapes[0].x0': selectedWavelength, 'shapes[0].x1': selectedWavelength });
+        Plotly.restyle('spectralPlot', { x: [[selectedWavelength, selectedWavelength]], y: [[aAtCursor, cAtCursor]] }, [2]);
+      } else {
+        renderSpectralPlot();
+      }
+    }
+
+    function onDepthChanged(fromProfileDrag) {
+      renderStatusRow();
+      renderSpectralPlot();
+      if (fromProfileDrag) {
+        const row = castRows[selectedDepthIdx];
+        const aAtDepth = interpAtWavelength(aWavelengths, row.a, selectedWavelength);
+        const cAtDepth = interpAtWavelength(cWavelengths, row.c, selectedWavelength);
+        Plotly.relayout('profilePlot', { 'shapes[0].y0': row.pressure, 'shapes[0].y1': row.pressure });
+        Plotly.restyle('profilePlot', { x: [[aAtDepth, cAtDepth]], y: [[row.pressure, row.pressure]] }, [2]);
+      } else {
+        renderProfilePlot();
+      }
+    }
+
+    // Hand-rolled mousedown/mousemove/mouseup instead of Plotly's built-in
+    // shape-editing (shapes[i].editable: true) -- verified against a real
+    // simulated mouse drag (Chrome DevTools Protocol Input.dispatchMouseEvent,
+    // not just a synthetic plotly_relayout event) that the built-in
+    // mechanism does NOT actually respond to a plain click-and-drag on the
+    // shape in this Plotly version/config, dragmode:false or not. This
+    // owns the whole gesture instead: a press within HIT_TOLERANCE_PX of
+    // the cursor's current on-screen position starts a drag that tracks
+    // the mouse via clientPixelToData; a press elsewhere in the plot area
+    // that ends (mouseup) within CLICK_SLOP_PX of where it started is
+    // treated as a click-to-jump. Listens on `window` for move/up (not the
+    // div) so the drag keeps tracking even if the pointer leaves the plot
+    // area mid-drag.
+    function wireCursorDrag(divId, axisLetter, getValue, setValue, onChange) {
+      const div = document.getElementById(divId);
+      const HIT_TOLERANCE_PX = 14;
+      const CLICK_SLOP_PX = 4;
+      let mode = null;       // null | 'drag' | 'pending-click'
+      let downPixel = null;
+      // onChange(true) does a full Plotly.react on the OTHER plot (see
+      // onWavelengthChanged/onDepthChanged) -- calling that on every raw
+      // mousemove (which can fire well over 60/sec) queues up react calls
+      // faster than the browser can paint them, so the other pane visibly
+      // stops updating mid-drag even though state is changing underneath.
+      // rAF-throttling to one update per animation frame, always using the
+      // latest pointer position, keeps it at most one frame behind instead.
+      let rafScheduled = false;
+      let latestEvent = null;
+
+      function inPlotArea(clientX, clientY) {
+        const area = plotAreaRect(div);
+        return clientX >= area.left && clientX <= area.left + area.width
+          && clientY >= area.top && clientY <= area.top + area.height;
+      }
+      function pixelOf(ev) { return axisLetter === 'x' ? ev.clientX : ev.clientY; }
+
+      // Capture phase, not bubble (the `true` below) -- Plotly's own
+      // zoom/pan mousedown listener sits on an inner drag-layer element,
+      // not this outer div, so a normal bubble-phase listener here would
+      // run AFTER Plotly's has already started processing the gesture,
+      // too late for stopPropagation to matter. Capture-phase listeners
+      // run top-down before the event ever reaches that inner element, so
+      // stopping it here reliably keeps Plotly from seeing it at all.
+      div.addEventListener('mousedown', (ev) => {
+        if (ev.button !== 0 || !inPlotArea(ev.clientX, ev.clientY)) return;
+        const mousePx = pixelOf(ev);
+        const cursorPx = dataToClientPixel(div, axisLetter, getValue());
+        downPixel = mousePx;
+        if (Math.abs(mousePx - cursorPx) <= HIT_TOLERANCE_PX) {
+          // On the cursor itself -- claim the whole gesture exclusively so
+          // Plotly's own zoom/pan never starts underneath it.
+          mode = 'drag';
+          ev.preventDefault();
+          ev.stopPropagation();
+        } else {
+          // Anywhere else -- note the start position for a possible
+          // click-to-jump on mouseup, but otherwise leave the event
+          // completely alone so Plotly's own zoom/pan handles it normally.
+          mode = 'pending-click';
+        }
+      }, true);
+
+      window.addEventListener('mousemove', (ev) => {
+        if (mode !== 'drag') return;
+        ev.preventDefault();
+        latestEvent = ev;
+        if (rafScheduled) return;
+        rafScheduled = true;
+        requestAnimationFrame(() => {
+          rafScheduled = false;
+          if (mode !== 'drag' || !latestEvent) return;
+          setValue(clientPixelToData(div, axisLetter, pixelOf(latestEvent)));
+          onChange(true);
+        });
+      });
+
+      window.addEventListener('mouseup', (ev) => {
+        if (mode === 'pending-click') {
+          const mousePx = pixelOf(ev);
+          if (Math.abs(mousePx - downPixel) <= CLICK_SLOP_PX && inPlotArea(ev.clientX, ev.clientY)) {
+            setValue(clientPixelToData(div, axisLetter, mousePx));
+            onChange(false);
+          }
+        } else if (mode === 'drag') {
+          // Apply the release position itself, not whatever the last
+          // rAF-throttled mousemove happened to land on -- a frame could
+          // still be in flight (queued but not yet run) when the button
+          // comes up, which would otherwise leave the cursor up to one
+          // frame behind the pointer's actual final position.
+          setValue(clientPixelToData(div, axisLetter, pixelOf(ev)));
+          onChange(false);
+        }
+        mode = null;
+        downPixel = null;
+        latestEvent = null;
+      });
+    }
+
+    function wireInteractions() {
+      wireCursorDrag(
+        'spectralPlot', 'x',
+        () => selectedWavelength,
+        (v) => { selectedWavelength = v; },
+        onWavelengthChanged,
+      );
+      wireCursorDrag(
+        'profilePlot', 'y',
+        () => castRows[selectedDepthIdx].pressure,
+        (v) => { selectedDepthIdx = nearestRowIndexForDepth(v); },
+        onDepthChanged,
+      );
+    }
+
+    function nearestWavelengthIndex(wavelengths, target) {
+      let best = 0, bestDist = Infinity;
+      for (let i = 0; i < wavelengths.length; i++) {
+        const d = Math.abs(wavelengths[i] - target);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+      return best;
+    }
+
+    // Up/Down step the depth (horizontal) cursor one sampled row at a time;
+    // Left/Right step the wavelength (vertical) cursor one native c(lambda)
+    // sample at a time (c's grid, not a's -- same "c is the reference
+    // spectrum" convention as the left plot's y-axis ceiling). Skipped
+    // while a form control has focus so it doesn't fight normal keyboard
+    // use of e.g. the file <select>.
+    function wireKeyboard() {
+      document.addEventListener('keydown', (ev) => {
+        if (!castRows.length) return;
+        const tag = document.activeElement && document.activeElement.tagName;
+        if (tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+        if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+          ev.preventDefault();
+          const delta = ev.key === 'ArrowUp' ? -1 : 1;
+          selectedDepthIdx = Math.max(0, Math.min(castRows.length - 1, selectedDepthIdx + delta));
+          renderAll();
+        } else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+          ev.preventDefault();
+          const delta = ev.key === 'ArrowLeft' ? -1 : 1;
+          const idx = nearestWavelengthIndex(cWavelengths, selectedWavelength);
+          const nextIdx = Math.max(0, Math.min(cWavelengths.length - 1, idx + delta));
+          selectedWavelength = cWavelengths[nextIdx];
+          renderAll();
+        }
+      });
+    }
+
+    async function loadWavelengths() {
+      const r = await fetch('/api/wavelengths');
+      const d = await r.json();
+      aWavelengths = d.a;
+      cWavelengths = d.c;
+      selectedWavelength = cWavelengths[Math.floor(cWavelengths.length / 2)];
+    }
+
+    async function loadFileList() {
+      const select = document.getElementById('fileSelect');
+      const r = await fetch('/api/files');
+      const files = await r.json();
+      select.innerHTML = '';
+      for (const f of files) {
+        const opt = document.createElement('option');
+        opt.value = f.name;
+        opt.textContent = `${f.name} (${f.kind})`;
+        select.appendChild(opt);
+      }
+      select.disabled = files.length === 0;
+      return files;
+    }
+
+    async function loadCast(name) {
+      const loadStatus = document.getElementById('loadStatus');
+      loadStatus.classList.remove('error');
+      loadStatus.textContent = `Loading ${name}...`;
+      try {
+        const r = await fetch(`/api/cast?name=${encodeURIComponent(name)}`);
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || `Failed to load ${name}`);
+        castRows = d.rows;
+        castFilename = d.filename;
+        hasLatLon = d.has_lat_lon;
+        if (!castRows.length) throw new Error(`${name} has no rows`);
+        maxDepth = Math.max(...castRows.map((row) => row.pressure));
+        minDepth = Math.min(...castRows.map((row) => row.pressure));
+        selectedDepthIdx = Math.floor(castRows.length / 2);
+        loadStatus.textContent = `Loaded ${castRows.length} rows from ${name}`;
+        renderAll();
+      } catch (err) {
+        loadStatus.classList.add('error');
+        loadStatus.textContent = String((err && err.message) || err);
+      }
+    }
+
+    function applyTheme() {
+      document.body.classList.toggle('light', currentTheme === 'light');
+      document.getElementById('themeToggle').title =
+        currentTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+    }
+
+    function toggleTheme() {
+      currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+      localStorage.setItem(THEME_STORAGE_KEY, currentTheme);
+      applyTheme();
+      // The half-black/half-white button is CSS and updates instantly, but
+      // paper/plot background, font, gridline, and cursor colors are baked
+      // into each Plotly layout object -- only a real re-render picks up
+      // the new theme() values there.
+      if (castRows.length) renderAll();
+    }
+
+    // Applied immediately, before the async load below, so the page chrome
+    // (and the very first plot render, once data arrives) never flashes
+    // the wrong theme for a stored preference.
+    applyTheme();
+    document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+
+    (async () => {
+      await loadWavelengths();
+      const files = await loadFileList();
+      const select = document.getElementById('fileSelect');
+      select.addEventListener('change', () => loadCast(select.value));
+      if (files.length) {
+        select.value = files[0].name;
+        // wireInteractions()'s drag handlers read div._fullLayout (set by
+        // Plotly only once a plot has actually been drawn) to convert
+        // pixels to data coordinates -- so wire up after this first
+        // render, not before.
+        await loadCast(files[0].name);
+        wireInteractions();
+        wireKeyboard();
+      } else {
+        document.getElementById('loadStatus').textContent = 'No cast files found under IOPS/';
+      }
+    })();
+  </script>
+</body>
+</html>
